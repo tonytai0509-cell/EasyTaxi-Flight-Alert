@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 # CONFIGURATION
 # =========================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8729024731:AAFsaKxKc_8bgxwvno2PqJ-c_ZcEqRovPHs")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "COLLE_TON_TOKEN_ICI")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004321946575")
 
 URL_ARRIVEES = "https://www.nice.aeroport.fr/en/flights/arrivals"
@@ -22,6 +22,7 @@ PARIS = ZoneInfo("Europe/Paris")
 
 vols_deja_annonces = set()
 dernier_resume = None
+telegram_update_offset = None
 
 
 # =========================
@@ -29,7 +30,7 @@ dernier_resume = None
 # =========================
 
 def envoyer_telegram(message):
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "COLLE_TON_TOKEN_ICI":
+    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "8729024731:AAFsaKxKc_8bgxwvno2PqJ-c_ZcEqRovPHs":
         print("ERREUR: TELEGRAM_TOKEN manquant.")
         return
 
@@ -52,6 +53,73 @@ def envoyer_telegram(message):
         print("Exception Telegram:", e)
 
 
+def recuperer_updates():
+    global telegram_update_offset
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    params = {"timeout": 1}
+
+    if telegram_update_offset is not None:
+        params["offset"] = telegram_update_offset
+
+    try:
+        reponse = requests.get(url, params=params, timeout=10)
+        data = reponse.json()
+        if not data.get("ok"):
+            return []
+
+        updates = data.get("result", [])
+        if updates:
+            telegram_update_offset = updates[-1]["update_id"] + 1
+
+        return updates
+    except Exception as e:
+        print("Erreur getUpdates:", e)
+        return []
+
+
+def ignorer_anciennes_commandes():
+    global telegram_update_offset
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    try:
+        reponse = requests.get(url, timeout=10)
+        data = reponse.json()
+        updates = data.get("result", [])
+        if updates:
+            telegram_update_offset = updates[-1]["update_id"] + 1
+    except Exception as e:
+        print("Erreur initialisation offset:", e)
+
+
+def gerer_commandes(vols):
+    updates = recuperer_updates()
+
+    for update in updates:
+        message = update.get("message") or update.get("edited_message")
+        if not message:
+            continue
+
+        chat = message.get("chat", {})
+        chat_id = str(chat.get("id"))
+        texte = (message.get("text") or "").strip().lower()
+
+        # On répond uniquement dans le groupe configuré
+        if chat_id != str(TELEGRAM_CHAT_ID):
+            continue
+
+        if texte.startswith("/test") or texte.startswith("/vols"):
+            envoyer_telegram(creer_resume(vols))
+
+        elif texte.startswith("/help"):
+            envoyer_telegram(
+                "🤖 <b>Commandes EasyTaxi Flight Alert</b>\n\n"
+                "/test - Affiche le résumé actuel\n"
+                "/vols - Affiche les prochains vols\n"
+                "/help - Affiche l'aide"
+            )
+
+
 # =========================
 # OUTILS
 # =========================
@@ -66,13 +134,8 @@ def nettoyer(texte):
 
 def statut_est_arrive(statut):
     s = statut.lower()
-    mots = ["arrived", "landing", "landed", "atterri", "arrivé", "arrive"]
+    mots = ["arrived", "landing", "landed", "atterri", "arrivé"]
     return any(mot in s for mot in mots)
-
-
-def statut_est_annule(statut):
-    s = statut.lower()
-    return "cancel" in s or "annul" in s
 
 
 def convertir_heure_du_jour(heure_txt):
@@ -81,14 +144,20 @@ def convertir_heure_du_jour(heure_txt):
     return now.replace(hour=h, minute=m, second=0, microsecond=0)
 
 
+def badge_terminal(terminal):
+    if str(terminal) == "1":
+        return "🔵 <b>TERMINAL 1</b>"
+    if str(terminal) == "2":
+        return "🟣 <b>TERMINAL 2</b>"
+    return f"Terminal {terminal}"
+
+
 # =========================
 # RECUPERATION DES VOLS
 # =========================
 
 def recuperer_lignes_page():
-    headers = {
-        "User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/2.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/3.0"}
     html = requests.get(URL_ARRIVEES, headers=headers, timeout=25).text
     soup = BeautifulSoup(html, "html.parser")
 
@@ -102,7 +171,6 @@ def extraire_vols_depuis_lignes(lignes):
     vols = []
 
     for i, ligne in enumerate(lignes):
-        # Un bloc de vol commence souvent par l'heure prévue
         if not re.fullmatch(r"\d{1,2}:\d{2}", ligne):
             continue
 
@@ -111,18 +179,14 @@ def extraire_vols_depuis_lignes(lignes):
             continue
 
         heure_prevue = bloc[0]
-
-        # Ville de provenance : souvent ligne juste après l'heure
         ville = bloc[1] if len(bloc) > 1 else "Inconnue"
 
-        # Terminal
         terminal = None
         for x in bloc:
             if x in ["1", "2"]:
                 terminal = x
                 break
 
-        # Numéro de vol
         numeros = []
         for x in bloc:
             if re.fullmatch(r"[A-Z0-9]{2,3}\s?\d{2,5}[A-Z]?", x):
@@ -130,18 +194,13 @@ def extraire_vols_depuis_lignes(lignes):
 
         numero_vol = numeros[0] if numeros else "N/A"
 
-        # Statut
         statut = ""
-        mots_statut = [
-            "Arrived", "Expected", "Delayed", "Landing", "Cancelled",
-            "On time", "Last call", "Boarding"
-        ]
+        mots_statut = ["Arrived", "Expected", "Delayed", "Landing", "Cancelled", "On time"]
         for x in bloc:
             if any(mot.lower() in x.lower() for mot in mots_statut):
                 statut = x
                 break
 
-        # Compagnie : heuristique simple
         compagnie = "N/A"
         elements_interdits = set([heure_prevue, ville, terminal or "", numero_vol])
         for x in bloc[2:]:
@@ -159,7 +218,6 @@ def extraire_vols_depuis_lignes(lignes):
                 compagnie = x
                 break
 
-        # On garde uniquement les vols exploitables T1/T2
         if terminal in ["1", "2"] and statut:
             vols.append({
                 "heure_prevue": heure_prevue,
@@ -170,7 +228,6 @@ def extraire_vols_depuis_lignes(lignes):
                 "statut": statut,
             })
 
-    # Déduplication
     uniques = {}
     for vol in vols:
         cle = f"{vol['numero_vol']}-{vol['heure_prevue']}-{vol['terminal']}"
@@ -227,11 +284,11 @@ def creer_resume(vols):
         f"🕒 Mise à jour : {maintenant_paris().strftime('%H:%M')}\n"
         f"🚖 Activité : <b>{niveau_affluence(len(dans_30))}</b>\n\n"
         f"⏱️ <b>Dans les 30 min :</b> {len(dans_30)} vols\n"
-        f"• Terminal 1 : {t1_30}\n"
-        f"• Terminal 2 : {t2_30}\n\n"
+        f"🔵 Terminal 1 : {t1_30}\n"
+        f"🟣 Terminal 2 : {t2_30}\n\n"
         f"🕐 <b>Dans la prochaine heure :</b> {len(dans_60)} vols\n"
-        f"• Terminal 1 : {t1_60}\n"
-        f"• Terminal 2 : {t2_60}\n\n"
+        f"🔵 Terminal 1 : {t1_60}\n"
+        f"🟣 Terminal 2 : {t2_60}\n\n"
     )
 
     if dans_30:
@@ -239,7 +296,7 @@ def creer_resume(vols):
         for vol in dans_30[:10]:
             message += (
                 f"• {vol['heure_prevue']} - {vol['ville']} - "
-                f"{vol['numero_vol']} - T{vol['terminal']} - {vol['statut']}\n"
+                f"{vol['compagnie']} - {badge_terminal(vol['terminal'])} - {vol['statut']}\n"
             )
     else:
         message += "Aucun vol prévu dans les 30 prochaines minutes."
@@ -256,10 +313,6 @@ def cle_vol(vol):
 
 
 def initialiser_sans_spam(vols):
-    """
-    Au démarrage, on marque les vols déjà arrivés comme connus.
-    Comme ça, le bot ne spamme pas 20 anciens atterrissages.
-    """
     for vol in vols:
         if statut_est_arrive(vol["statut"]):
             vols_deja_annonces.add(cle_vol(vol))
@@ -278,11 +331,10 @@ def envoyer_alertes_nouvelles_arrivees(vols):
             continue
 
         message = (
-            "🛬 <b>NOUVELLE ARRIVÉE</b>\n\n"
-            f"✈️ <b>{vol['numero_vol']}</b>\n"
-            f"🏢 {vol['compagnie']}\n"
-            f"🌍 Provenance : {vol['ville']}\n"
-            f"📍 Terminal : <b>{vol['terminal']}</b>\n"
+            "🚨 <b>NOUVELLE ARRIVÉE</b> 🚨\n\n"
+            f"✈️ <b>{vol['compagnie']}</b>\n"
+            f"🌍 Provenance : <b>{vol['ville']}</b>\n"
+            f"📍 {badge_terminal(vol['terminal'])}\n"
             f"🕒 Heure prévue : {vol['heure_prevue']}\n"
             f"📌 Statut : {vol['statut']}\n\n"
             f"🚖 Vols dans les 30 prochaines minutes : <b>{nb_30}</b>"
@@ -299,7 +351,13 @@ def envoyer_alertes_nouvelles_arrivees(vols):
 def boucle_principale():
     global dernier_resume
 
-    envoyer_telegram("✅ <b>EasyTaxi Flight Alert V2 lancé</b>\nSurveillance des arrivées T1 + T2 activée.")
+    ignorer_anciennes_commandes()
+
+    envoyer_telegram(
+        "✅ <b>EasyTaxi Flight Alert V3 lancé</b>\n"
+        "Surveillance des arrivées T1 + T2 activée.\n\n"
+        "Commande disponible : /test"
+    )
 
     try:
         vols = recuperer_vols()
@@ -312,6 +370,8 @@ def boucle_principale():
     while True:
         try:
             vols = recuperer_vols()
+
+            gerer_commandes(vols)
             envoyer_alertes_nouvelles_arrivees(vols)
 
             now = maintenant_paris()
