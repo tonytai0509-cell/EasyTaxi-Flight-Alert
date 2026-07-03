@@ -83,6 +83,9 @@ trains_retard_annonces = {}
 
 DB_FICHIER = os.getenv("DB_FICHIER", "historique_vols.db")
 
+# ---- Compteur de voitures par terminal (signalé par les chauffeurs) ----
+FILE_FICHIER = os.getenv("FILE_FICHIER", "file_attente.json")
+
 # ---- Commandes Telegram (polling gratuit, données cache uniquement) ----
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 dernier_update_id = None
@@ -1247,6 +1250,147 @@ def repondre_telegram(chat_id, message):
         logger.error(f"Erreur réponse commande Telegram: {e}")
 
 
+# =========================
+# SIGNALEMENT RAPIDE PAR BOUTONS (2 taps, sans clavier à sortir)
+# =========================
+
+LOC_INFOS = {
+    "t1_babel": ("t1", "reserve"),
+    "t1_lineaire": ("t1", "lineaire"),
+    "t2_parking": ("t2", "parking"),
+    "t2_lineaire": ("t2", "lineaire"),
+}
+LOC_LABELS = {
+    "t1_babel": "🅿️ T1 Babel",
+    "t1_lineaire": "🚕 T1 Linéaire",
+    "t2_parking": "🅿️ T2 Parking",
+    "t2_lineaire": "🚕 T2 Linéaire",
+}
+NOMBRES_RAPIDES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30]
+
+
+def clavier_emplacements():
+    return {"inline_keyboard": [
+        [{"text": "🅿️ T1 Babel", "callback_data": "loc:t1_babel"},
+         {"text": "🚕 T1 Linéaire", "callback_data": "loc:t1_lineaire"}],
+        [{"text": "🅿️ T2 Parking", "callback_data": "loc:t2_parking"},
+         {"text": "🚕 T2 Linéaire", "callback_data": "loc:t2_lineaire"}],
+    ]}
+
+
+def clavier_nombres(loc):
+    lignes, ligne = [], []
+    for i, n in enumerate(NOMBRES_RAPIDES, start=1):
+        ligne.append({"text": str(n), "callback_data": f"cnt:{loc}:{n}"})
+        if i % 5 == 0:
+            lignes.append(ligne)
+            ligne = []
+    if ligne:
+        lignes.append(ligne)
+    lignes.append([{"text": "⬅️ Retour", "callback_data": "loc:retour"}])
+    return {"inline_keyboard": lignes}
+
+
+PERSISTENT_KEYBOARD = {
+    "keyboard": [[{"text": "🚖 Signaler"}]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+
+
+def envoyer_clavier_permanent(chat_id):
+    """Affiche le bouton '🚖 Signaler' en permanence en bas de l'écran (remplace le clavier),
+    pour que les chauffeurs n'aient jamais besoin de taper une commande."""
+    try:
+        requests.post(
+            f"{TELEGRAM_API_URL}/sendMessage",
+            data={
+                "chat_id": chat_id,
+                "text": "🚖 Appuie sur le bouton ci-dessous pour signaler des voitures, à tout moment.",
+                "reply_markup": json.dumps(PERSISTENT_KEYBOARD),
+            },
+            timeout=15,
+        )
+    except Exception as e:
+        logger.error(f"Erreur envoi clavier permanent: {e}")
+
+
+def envoyer_telegram_clavier(chat_id, texte, clavier):
+    try:
+        requests.post(
+            f"{TELEGRAM_API_URL}/sendMessage",
+            data={"chat_id": chat_id, "text": texte, "parse_mode": "HTML", "reply_markup": json.dumps(clavier)},
+            timeout=15,
+        )
+    except Exception as e:
+        logger.error(f"Erreur envoi clavier Telegram: {e}")
+
+
+def editer_message_telegram(chat_id, message_id, texte, clavier=None):
+    try:
+        data = {"chat_id": chat_id, "message_id": message_id, "text": texte, "parse_mode": "HTML"}
+        if clavier is not None:
+            data["reply_markup"] = json.dumps(clavier)
+        requests.post(f"{TELEGRAM_API_URL}/editMessageText", data=data, timeout=15)
+    except Exception as e:
+        logger.error(f"Erreur édition message Telegram: {e}")
+
+
+def repondre_callback(callback_id, texte=None):
+    try:
+        data = {"callback_query_id": callback_id}
+        if texte:
+            data["text"] = texte
+        requests.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", data=data, timeout=10)
+    except Exception as e:
+        logger.error(f"Erreur answerCallbackQuery: {e}")
+
+
+def traiter_callback(callback):
+    """Gère les taps sur les boutons du clavier de signalement rapide."""
+    data = callback.get("data", "")
+    chat_id = callback["message"]["chat"]["id"]
+    message_id = callback["message"]["message_id"]
+    callback_id = callback["id"]
+    qui = (callback.get("from") or {}).get("first_name", "quelqu'un")
+
+    if data == "loc:retour":
+        repondre_callback(callback_id)
+        editer_message_telegram(chat_id, message_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
+        return
+
+    if data.startswith("loc:"):
+        loc = data.split(":", 1)[1]
+        if loc not in LOC_INFOS:
+            repondre_callback(callback_id)
+            return
+        repondre_callback(callback_id)
+        label = LOC_LABELS.get(loc, loc)
+        editer_message_telegram(chat_id, message_id, f"🔢 Combien de voitures à {label} ?", clavier_nombres(loc))
+        return
+
+    if data.startswith("cnt:"):
+        _, loc, nombre_str = data.split(":", 2)
+        try:
+            nombre = int(nombre_str)
+        except ValueError:
+            repondre_callback(callback_id)
+            return
+        terminal, mode = LOC_INFOS.get(loc, (None, None))
+        if terminal:
+            definir_position(terminal, nombre, mode, qui)
+            repondre_callback(callback_id, "Enregistré ✅")
+            editer_message_telegram(
+                chat_id, message_id,
+                f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures (signalé par {qui})"
+            )
+        else:
+            repondre_callback(callback_id)
+        return
+
+    repondre_callback(callback_id)
+
+
 def commande_prochain(vols):
     a_venir = [
         v for v in vols
@@ -1301,6 +1445,125 @@ def commande_tgv(trains):
     return f"🚄 <b>TGV Nice-Ville</b> (1h)\n<code>{corps}</code>"
 
 
+# =========================
+# COMPTEUR DE VOITURES PAR TERMINAL
+# Les chauffeurs signalent l'état en tapant simplement un message,
+# ex: "8pk t2", "30 parking t2", "T1 15", "3 linéaire t1"
+# Le nombre représente le TOTAL de voitures sur ce terminal (linéaire + débordement).
+# =========================
+
+def charger_file_attente():
+    try:
+        with open(FILE_FICHIER, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"t1": {"nombre": 0, "mode": None, "maj": None, "qui": None},
+                "t2": {"nombre": 0, "mode": None, "maj": None, "qui": None}}
+
+
+def sauver_file_attente(data):
+    try:
+        with open(FILE_FICHIER, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.error(f"Erreur sauvegarde file d'attente: {e}")
+
+
+def definir_position(terminal, nombre, mode, qui):
+    data = charger_file_attente()
+    data[terminal] = {"nombre": nombre, "mode": mode, "maj": maintenant().isoformat(), "qui": qui}
+    sauver_file_attente(data)
+    return data[terminal]
+
+
+def minutes_depuis(iso_str):
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        return max(0, int((maintenant() - dt).total_seconds() // 60))
+    except Exception:
+        return None
+
+
+def parser_position(texte):
+    """Extrait (terminal, nombre, mode) d'un message libre du type
+    '8pk t2', '30 parking t2', 'T1 15', '3 linéaire t1'.
+    - mode 'parking'/'reserve' = débordement (linéaire plein, nombre = total du terminal)
+    - mode 'lineaire' = pas encore plein
+    - mode None = compte global sans précision
+    Retourne None si pas de nombre, 'ambigu' si 'linéaire' cité sans terminal précisé."""
+    t = texte.lower().strip()
+
+    # Extraire le terminal en premier et le retirer du texte, pour ne pas confondre
+    # le "1" de "T1" avec le nombre de voitures.
+    terminal = None
+    m = re.search(r"\bt ?1\b", t)
+    if m:
+        terminal = "t1"
+        t_sans_terminal = t[:m.start()] + " " + t[m.end():]
+    else:
+        m = re.search(r"\bt ?2\b", t)
+        if m:
+            terminal = "t2"
+            t_sans_terminal = t[:m.start()] + " " + t[m.end():]
+        else:
+            t_sans_terminal = t
+
+    nums = re.findall(r"\d+", t_sans_terminal)
+    if not nums:
+        return None
+    nombre = int(nums[0])
+
+    if "reserve" in t or "réserve" in t or "babel" in t:
+        return (terminal or "t1", nombre, "reserve")
+    if "parking" in t or "pk" in t:
+        return (terminal or "t2", nombre, "parking")
+    if "lineaire" in t or "linéaire" in t:
+        if terminal is None:
+            return "ambigu"
+        return (terminal, nombre, "lineaire")
+    if terminal is not None:
+        return (terminal, nombre, None)
+    return None
+
+
+def label_position(terminal, mode):
+    if terminal == "t1":
+        if mode == "reserve":
+            return "🅿️ T1 (Babel, linéaire plein)"
+        return "🚕 T1"
+    else:
+        if mode == "parking":
+            return "🅿️ T2 (parking, linéaire plein)"
+        return "🚕 T2"
+
+
+def commande_etat_file():
+    data = charger_file_attente()
+    lignes = ["🚖 <b>État des terminaux</b>\n"]
+    for terminal in ("t1", "t2"):
+        info = data.get(terminal, {"nombre": 0, "mode": None, "maj": None, "qui": None})
+        nb = info.get("nombre", 0)
+        mode = info.get("mode")
+        mins = minutes_depuis(info.get("maj"))
+        if mins is None:
+            age = "jamais signalé"
+        elif mins == 0:
+            age = "à l'instant"
+        else:
+            age = f"il y a {mins} min"
+        lignes.append(f"{label_position(terminal, mode)} : <b>{nb}</b> ({age})")
+    return "\n".join(lignes)
+
+
+def commande_vider_file():
+    data = {"t1": {"nombre": 0, "mode": None, "maj": maintenant().isoformat(), "qui": "reset"},
+            "t2": {"nombre": 0, "mode": None, "maj": maintenant().isoformat(), "qui": "reset"}}
+    sauver_file_attente(data)
+    return "🔄 Les compteurs T1 et T2 ont été remis à zéro."
+
+
 def commande_aide():
     return (
         "📋 <b>Commandes disponibles</b>\n"
@@ -1309,7 +1572,14 @@ def commande_aide():
         "/t2 — vols Terminal 2 (1h)\n"
         "/vol NUMERO — chercher un vol précis\n"
         "/tgv — prochains TGV à Nice-Ville (1h)\n"
-        "/quota — quota API restant\n\n"
+        "/quota — quota API restant\n"
+        "/etat — voitures aux terminaux\n\n"
+        "🚖 <b>Signaler des voitures</b>\n"
+        "Appuie sur le bouton <b>🚖 Signaler</b> en bas de l'écran (2 taps)\n"
+        "Ou tape <code>/v</code>\n"
+        "Ou écris directement :\n"
+        "<code>T2 linéaire 15v</code> · <code>T2 15 pk</code>\n"
+        "<code>T1 linéaire 4</code> · <code>T1 10 babel</code>\n\n"
         "<i>Toutes ces commandes utilisent uniquement les données déjà en cache "
         "(sources gratuites) — aucun appel API supplémentaire n'est déclenché.</i>"
     )
@@ -1321,13 +1591,33 @@ def traiter_commandes(vols, trains=None):
     updates = recuperer_updates_telegram()
     for u in updates:
         dernier_update_id = u["update_id"]
+
+        callback = u.get("callback_query")
+        if callback:
+            traiter_callback(callback)
+            continue
+
         message = u.get("message") or u.get("channel_post")
         if not message:
             continue
         texte = (message.get("text") or "").strip()
-        if not texte.startswith("/"):
-            continue
         chat_id = message["chat"]["id"]
+
+        if not texte.startswith("/"):
+            if texte in ("🚖 Signaler", "🚖"):
+                envoyer_telegram_clavier(chat_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
+                continue
+            # Message libre : on tente de le lire comme un signalement de voitures
+            resultat = parser_position(texte)
+            if resultat == "ambigu":
+                repondre_telegram(chat_id, "Précise le terminal : par exemple '3 linéaire t1' ou '3 linéaire t2'.")
+            elif resultat:
+                terminal, nombre, mode = resultat
+                qui = (message.get("from") or {}).get("first_name", "quelqu'un")
+                definir_position(terminal, nombre, mode, qui)
+                repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures (signalé par {qui})")
+            continue
+
         partie = texte.split()
         commande = partie[0].lower().split("@")[0] # gère /prochain@NomDuBot
 
@@ -1343,6 +1633,12 @@ def traiter_commandes(vols, trains=None):
             repondre_telegram(chat_id, commande_tgv(trains))
         elif commande == "/quota":
             repondre_telegram(chat_id, commande_quota())
+        elif commande == "/etat":
+            repondre_telegram(chat_id, commande_etat_file())
+        elif commande == "/vide":
+            repondre_telegram(chat_id, commande_vider_file())
+        elif commande in ("/signaler", "/rapide", "/v"):
+            envoyer_telegram_clavier(chat_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
         elif commande in ("/aide", "/help", "/start"):
             repondre_telegram(chat_id, commande_aide())
         else:
@@ -1383,6 +1679,7 @@ def boucle_principale():
     else:
         message_demarrage += "\n🚄 Module TGV désactivé (SNCF_API_TOKEN manquant)."
     envoyer_telegram(message_demarrage)
+    envoyer_clavier_permanent(TELEGRAM_CHAT_ID)
 
     try:
         vols = mettre_a_jour_cache_si_besoin(force=True)
