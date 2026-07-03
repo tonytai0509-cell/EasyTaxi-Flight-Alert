@@ -84,6 +84,9 @@ trains_retard_annonces = {}
 
 DB_FICHIER = os.getenv("DB_FICHIER", "historique_vols.db")
 
+# ---- Persistance des mémoires anti-doublon (évite les alertes répétées après un redémarrage) ----
+ETATS_FICHIER = os.getenv("ETATS_FICHIER", "etats_alertes.json")
+
 # ---- Compteur de voitures par terminal (signalé par les chauffeurs) ----
 FILE_FICHIER = os.getenv("FILE_FICHIER", "file_attente.json")
 
@@ -1381,9 +1384,10 @@ def repondre_callback(callback_id, texte=None):
 
 def envoyer_demande_nombre(chat_id, label):
     """Ouvre une vraie zone de réponse Telegram (force_reply) pour que le chauffeur
-    tape son nombre, puisse le corriger avant d'envoyer, comme un message normal."""
+    tape son nombre. Le message et la réponse seront supprimés juste après traitement,
+    pour ne laisser que la confirmation finale dans le groupe."""
     try:
-        requests.post(
+        r = requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
             data={
                 "chat_id": chat_id,
@@ -1395,8 +1399,11 @@ def envoyer_demande_nombre(chat_id, label):
             },
             timeout=15,
         )
+        if r.ok:
+            return r.json().get("result", {}).get("message_id")
     except Exception as e:
         logger.error(f"Erreur envoi demande nombre: {e}")
+    return None
 
 
 def traiter_callback(callback):
@@ -1448,11 +1455,11 @@ def traiter_callback(callback):
             repondre_callback(callback_id)
             return
         user_id = (callback.get("from") or {}).get("id")
-        attente_nombre_personnalise[(chat_id, user_id)] = (terminal, mode)
         repondre_callback(callback_id)
         label = LOC_LABELS.get(loc, loc)
-        editer_message_telegram(chat_id, message_id, f"✏️ Réponds au message ci-dessous 👇 pour {label}")
-        envoyer_demande_nombre(chat_id, label)
+        supprimer_message_telegram(chat_id, message_id)
+        prompt_id = envoyer_demande_nombre(chat_id, label)
+        attente_nombre_personnalise[(chat_id, user_id)] = (terminal, mode, prompt_id)
         return
 
     repondre_callback(callback_id)
@@ -1685,10 +1692,13 @@ def traiter_commandes(vols, trains=None):
             if cle_attente in attente_nombre_personnalise:
                 m = re.search(r"\d+", texte)
                 if m:
-                    terminal, mode = attente_nombre_personnalise.pop(cle_attente)
+                    terminal, mode, prompt_id = attente_nombre_personnalise.pop(cle_attente)
                     nombre = int(m.group())
                     qui = (message.get("from") or {}).get("first_name", "quelqu'un")
                     definir_position(terminal, nombre, mode, qui)
+                    supprimer_message_telegram(chat_id, message["message_id"]) # leur nombre tapé
+                    if prompt_id:
+                        supprimer_message_telegram(chat_id, prompt_id) # la question posée
                     repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures")
                 else:
                     repondre_telegram(chat_id, "Envoie juste un nombre, ex: 12")
