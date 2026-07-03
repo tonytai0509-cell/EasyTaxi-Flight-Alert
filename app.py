@@ -30,10 +30,10 @@ logger = logging.getLogger("easytaxi")
 # CONFIGURATION
 # =========================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8729024731:AAFsaKxKc_8bgxwvno2PqJ-c_ZcEqRovPHs")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004321946575")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "c43e14c814msh221d76b3577077ap15a88ajsna897fda6a4ef")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "aerodatabox.p.rapidapi.com")
 AEROPORT_IATA = "NCE"
 PARIS = ZoneInfo("Europe/Paris")
@@ -838,9 +838,9 @@ def heure_lisible_train(t):
 
 def ligne_train(t):
     heure = heure_lisible_train(t)
-    provenance = html.escape((t.get("provenance") or "")[:15])
-    voie = html.escape((t.get("voie") or "")[:6])
-    return f"{heure:<12} {provenance:<16} {voie:<7} {icone_train(t)}"
+    provenance = html.escape((t.get("provenance") or "")[:16])
+    numero = html.escape((t.get("numero") or "")[:6])
+    return f"{heure:<12} {provenance:<17} {numero:<7} {icone_train(t)}"
 
 
 def trains_dans_minutes(trains, minutes):
