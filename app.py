@@ -102,6 +102,9 @@ dernier_resume_matin = None
 WATCHDOG_SEUIL_ECHECS = 3
 echecs_site_consecutifs = 0
 alerte_watchdog_envoyee = False
+# Heures creuses où 0 vol est normal (pas un signe de site cassé) : pas d'alerte watchdog
+WATCHDOG_HEURE_DEBUT_SILENCE = int(os.getenv("WATCHDOG_HEURE_DEBUT_SILENCE", "1"))
+WATCHDOG_HEURE_FIN_SILENCE = int(os.getenv("WATCHDOG_HEURE_FIN_SILENCE", "5"))
 
 # ---- Nettoyage quotidien des caches ----
 dernier_nettoyage = None
@@ -639,12 +642,20 @@ def fusionner_site_api(vols_site, vols_api):
     return dedoublonner_vols(resultats)
 
 
+def _en_heures_creuses():
+    heure = maintenant().hour
+    return WATCHDOG_HEURE_DEBUT_SILENCE <= heure < WATCHDOG_HEURE_FIN_SILENCE
+
+
 def _verifier_watchdog_site(vols_site):
     """Alerte si le scraping du site retourne 0 vol plusieurs fois de suite
-    (signe probable que la structure du site a changé)."""
+    (signe probable que la structure du site a changé). Reste silencieux la nuit,
+    où 0 vol est parfaitement normal et ne signifie pas que le site est cassé."""
     global echecs_site_consecutifs, alerte_watchdog_envoyee
     if len(vols_site) == 0:
         echecs_site_consecutifs += 1
+        if _en_heures_creuses():
+            return # 0 vol la nuit = normal, pas un signe de bug
         logger.warning(f"Scraping site: 0 vol trouvé ({echecs_site_consecutifs}/{WATCHDOG_SEUIL_ECHECS})")
         if echecs_site_consecutifs >= WATCHDOG_SEUIL_ECHECS and not alerte_watchdog_envoyee:
             envoyer_telegram(
