@@ -6,6 +6,7 @@ import html
 import logging
 import logging.handlers
 import sqlite3
+import threading
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
@@ -1226,17 +1227,30 @@ def envoyer_alertes(vols):
 
 def recuperer_updates_telegram():
     global dernier_update_id
-    params = {"timeout": 0}
+    params = {"timeout": 20} # long-polling : la requête reste ouverte jusqu'à 20s, réponse immédiate dès qu'il y a du nouveau
     if dernier_update_id is not None:
         params["offset"] = dernier_update_id + 1
     try:
-        r = requests.get(f"{TELEGRAM_API_URL}/getUpdates", params=params, timeout=15)
+        r = requests.get(f"{TELEGRAM_API_URL}/getUpdates", params=params, timeout=25)
         if not r.ok:
             return []
         return r.json().get("result", [])
     except Exception as e:
         logger.error(f"Erreur getUpdates Telegram: {e}")
         return []
+
+
+def supprimer_message_telegram(chat_id, message_id):
+    """Supprime un message (ex: le 'Signaler' envoyé automatiquement en tapant le bouton fixe),
+    pour garder le groupe propre. Nécessite que le bot soit admin avec le droit de supprimer."""
+    try:
+        requests.post(
+            f"{TELEGRAM_API_URL}/deleteMessage",
+            data={"chat_id": chat_id, "message_id": message_id},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error(f"Erreur suppression message Telegram: {e}")
 
 
 def repondre_telegram(chat_id, message):
@@ -1267,6 +1281,7 @@ LOC_LABELS = {
     "t2_lineaire": "🚕 T2 Linéaire",
 }
 NOMBRES_RAPIDES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30]
+attente_nombre_personnalise = {} # (chat_id, user_id) -> (terminal, mode)
 
 
 def clavier_emplacements():
@@ -1287,6 +1302,7 @@ def clavier_nombres(loc):
             ligne = []
     if ligne:
         lignes.append(ligne)
+    lignes.append([{"text": "✏️ Autre nombre", "callback_data": f"custom:{loc}"}])
     lignes.append([{"text": "⬅️ Retour", "callback_data": "loc:retour"}])
     return {"inline_keyboard": lignes}
 
@@ -1386,6 +1402,19 @@ def traiter_callback(callback):
             )
         else:
             repondre_callback(callback_id)
+        return
+
+    if data.startswith("custom:"):
+        loc = data.split(":", 1)[1]
+        terminal, mode = LOC_INFOS.get(loc, (None, None))
+        if not terminal:
+            repondre_callback(callback_id)
+            return
+        user_id = (callback.get("from") or {}).get("id")
+        attente_nombre_personnalise[(chat_id, user_id)] = (terminal, mode)
+        repondre_callback(callback_id)
+        label = LOC_LABELS.get(loc, loc)
+        editer_message_telegram(chat_id, message_id, f"✏️ Écris le nombre pour {label} (juste le chiffre) :")
         return
 
     repondre_callback(callback_id)
@@ -1531,11 +1560,11 @@ def parser_position(texte):
 def label_position(terminal, mode):
     if terminal == "t1":
         if mode == "reserve":
-            return "🅿️ T1 (Babel, linéaire plein)"
+            return "🅿️ T1 (Babel)"
         return "🚕 T1"
     else:
         if mode == "parking":
-            return "🅿️ T2 (parking, linéaire plein)"
+            return "🅿️ T2 (parking)"
         return "🚕 T2"
 
 
@@ -1605,8 +1634,24 @@ def traiter_commandes(vols, trains=None):
 
         if not texte.startswith("/"):
             if texte in ("🚖 Signaler", "🚖"):
+                supprimer_message_telegram(chat_id, message["message_id"])
                 envoyer_telegram_clavier(chat_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
                 continue
+
+            user_id = (message.get("from") or {}).get("id")
+            cle_attente = (chat_id, user_id)
+            if cle_attente in attente_nombre_personnalise:
+                m = re.search(r"\d+", texte)
+                if m:
+                    terminal, mode = attente_nombre_personnalise.pop(cle_attente)
+                    nombre = int(m.group())
+                    qui = (message.get("from") or {}).get("first_name", "quelqu'un")
+                    definir_position(terminal, nombre, mode, qui)
+                    repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures (signalé par {qui})")
+                else:
+                    repondre_telegram(chat_id, "Envoie juste un nombre, ex: 12")
+                continue
+
             # Message libre : on tente de le lire comme un signalement de voitures
             resultat = parser_position(texte)
             if resultat == "ambigu":
@@ -1707,9 +1752,6 @@ def boucle_principale():
             trains = mettre_a_jour_cache_trains_si_besoin(force=False)
             envoyer_alertes_trains(trains)
 
-            # Commandes Telegram : API Telegram uniquement, jamais RapidAPI ni SNCF
-            traiter_commandes(vols, trains)
-
             envoyer_resume_matin_si_besoin(vols)
 
             if dernier_resume is None or (maintenant() - dernier_resume).total_seconds() >= FREQUENCE_RESUME_SECONDES:
@@ -1723,8 +1765,20 @@ def boucle_principale():
         time.sleep(10)
 
 
+def boucle_commandes():
+    """Thread dédié aux commandes/boutons Telegram, séparé de la boucle vols/trains,
+    pour une réactivité quasi instantanée (long-polling, pas de délai de 10s)."""
+    while True:
+        try:
+            traiter_commandes(vols_cache, trains_cache)
+        except Exception as e:
+            logger.error(f"Erreur boucle commandes: {e}")
+            time.sleep(1)
+
+
 def main():
     """Supervisor : si boucle_principale plante malgré tout, on redémarre au lieu de mourir."""
+    threading.Thread(target=boucle_commandes, daemon=True).start()
     while True:
         try:
             boucle_principale()
