@@ -1,13 +1,3 @@
-
-
-Conversations
-Google Workspace
-Obtenez une adresse e-mail professionnelle du type "@votre-entreprise.com"
-Plus 30 Go d'espace de stockage par utilisateur, des appels vidéo plus longs et d'autres avantages avec Google Workspace
-45 % sur 100 Go utilisés
-Conditions d'utilisation · Confidentialité · Règlement du programme
-Dernière activité sur le compte : il y a 1 minute
-Détails
 import os
 import re
 import time
