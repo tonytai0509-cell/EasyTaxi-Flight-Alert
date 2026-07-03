@@ -10,17 +10,19 @@ from zoneinfo import ZoneInfo
 # CONFIGURATION
 # =========================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "COLLE_TON_TOKEN_ICI")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8729024731:AAFsaKxKc_8bgxwvno2PqJ-c_ZcEqRovPHs")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004321946575")
 
 URL_ARRIVEES = "https://www.nice.aeroport.fr/en/flights/arrivals"
 
 FREQUENCE_VERIFICATION_SECONDES = 300      # 5 minutes
 FREQUENCE_RESUME_SECONDES = 1800           # 30 minutes
+RETARD_IMPORTANT_MINUTES = 20              # alerte retard à partir de 20 min
 
 PARIS = ZoneInfo("Europe/Paris")
 
 vols_deja_annonces = set()
+retards_deja_annonces = set()
 dernier_resume = None
 telegram_update_offset = None
 
@@ -30,7 +32,7 @@ telegram_update_offset = None
 # =========================
 
 def envoyer_telegram(message):
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "8729024731:AAFsaKxKc_8bgxwvno2PqJ-c_ZcEqRovPHs":
+    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "COLLE_TON_TOKEN_ICI":
         print("ERREUR: TELEGRAM_TOKEN manquant.")
         return
 
@@ -104,7 +106,6 @@ def gerer_commandes(vols):
         chat_id = str(chat.get("id"))
         texte = (message.get("text") or "").strip().lower()
 
-        # On répond uniquement dans le groupe configuré
         if chat_id != str(TELEGRAM_CHAT_ID):
             continue
 
@@ -138,10 +139,52 @@ def statut_est_arrive(statut):
     return any(mot in s for mot in mots)
 
 
+def statut_est_retarde(statut):
+    s = statut.lower()
+    return "delayed" in s or "retard" in s
+
+
+def traduire_statut(statut):
+    s = statut.lower()
+
+    heure = extraire_derniere_heure(statut)
+
+    if "arrived" in s or "landed" in s:
+        return f"Atterri {heure}" if heure else "Atterri"
+
+    if "landing" in s:
+        return f"En approche {heure}" if heure else "En approche"
+
+    if "delayed" in s:
+        return f"Retardé {heure}" if heure else "Retardé"
+
+    if "expected" in s:
+        return f"Prévu {heure}" if heure else "Prévu"
+
+    if "cancel" in s:
+        return "Annulé"
+
+    return statut
+
+
+def extraire_derniere_heure(texte):
+    heures = re.findall(r"\b\d{1,2}:\d{2}\b", texte or "")
+    return heures[-1] if heures else None
+
+
 def convertir_heure_du_jour(heure_txt):
     h, m = map(int, heure_txt.split(":"))
     now = maintenant_paris()
     return now.replace(hour=h, minute=m, second=0, microsecond=0)
+
+
+def minutes_entre(heure_depart_txt, heure_arrivee_txt):
+    try:
+        h1 = convertir_heure_du_jour(heure_depart_txt)
+        h2 = convertir_heure_du_jour(heure_arrivee_txt)
+        return int((h2 - h1).total_seconds() // 60)
+    except Exception:
+        return None
 
 
 def badge_terminal(terminal):
@@ -157,7 +200,7 @@ def badge_terminal(terminal):
 # =========================
 
 def recuperer_lignes_page():
-    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/3.0"}
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/4.0"}
     html = requests.get(URL_ARRIVEES, headers=headers, timeout=25).text
     soup = BeautifulSoup(html, "html.parser")
 
@@ -218,14 +261,18 @@ def extraire_vols_depuis_lignes(lignes):
                 compagnie = x
                 break
 
+        heure_reelle = extraire_derniere_heure(statut)
+
         if terminal in ["1", "2"] and statut:
             vols.append({
                 "heure_prevue": heure_prevue,
-                "ville": ville,
+                "heure_reelle": heure_reelle,
+                "ville": ville.upper(),
                 "numero_vol": numero_vol,
-                "compagnie": compagnie,
+                "compagnie": compagnie.upper(),
                 "terminal": terminal,
                 "statut": statut,
+                "statut_fr": traduire_statut(statut),
             })
 
     uniques = {}
@@ -261,6 +308,24 @@ def vols_dans_delai(vols, minutes):
     return resultats
 
 
+def retards_importants(vols):
+    resultats = []
+
+    for vol in vols:
+        if not statut_est_retarde(vol["statut"]):
+            continue
+
+        nouvelle_heure = vol.get("heure_reelle")
+        if not nouvelle_heure:
+            continue
+
+        retard = minutes_entre(vol["heure_prevue"], nouvelle_heure)
+        if retard is not None and retard >= RETARD_IMPORTANT_MINUTES:
+            resultats.append((vol, retard, nouvelle_heure))
+
+    return resultats
+
+
 def niveau_affluence(nombre_30_min):
     if nombre_30_min >= 8:
         return "🔴 Forte"
@@ -272,6 +337,7 @@ def niveau_affluence(nombre_30_min):
 def creer_resume(vols):
     dans_30 = vols_dans_delai(vols, 30)
     dans_60 = vols_dans_delai(vols, 60)
+    retards = retards_importants(vols)
 
     t1_30 = sum(1 for v in dans_30 if v["terminal"] == "1")
     t2_30 = sum(1 for v in dans_30 if v["terminal"] == "2")
@@ -282,7 +348,8 @@ def creer_resume(vols):
     message = (
         "✈️ <b>EASYTAXI FLIGHT ALERT</b>\n\n"
         f"🕒 Mise à jour : {maintenant_paris().strftime('%H:%M')}\n"
-        f"🚖 Activité : <b>{niveau_affluence(len(dans_30))}</b>\n\n"
+        f"🚖 Activité : <b>{niveau_affluence(len(dans_30))}</b>\n"
+        f"⚠️ Retards importants : <b>{len(retards)}</b>\n\n"
         f"⏱️ <b>Dans les 30 min :</b> {len(dans_30)} vols\n"
         f"🔵 Terminal 1 : {t1_30}\n"
         f"🟣 Terminal 2 : {t2_30}\n\n"
@@ -296,7 +363,7 @@ def creer_resume(vols):
         for vol in dans_30[:10]:
             message += (
                 f"• {vol['heure_prevue']} - {vol['ville']} - "
-                f"{vol['compagnie']} - {badge_terminal(vol['terminal'])} - {vol['statut']}\n"
+                f"{vol['compagnie']} - {badge_terminal(vol['terminal'])} - {vol['statut_fr']}\n"
             )
     else:
         message += "Aucun vol prévu dans les 30 prochaines minutes."
@@ -312,10 +379,17 @@ def cle_vol(vol):
     return f"{vol['numero_vol']}-{vol['heure_prevue']}-{vol['terminal']}"
 
 
+def cle_retard(vol):
+    return f"{vol['numero_vol']}-{vol['heure_prevue']}-{vol.get('heure_reelle')}-{vol['terminal']}"
+
+
 def initialiser_sans_spam(vols):
     for vol in vols:
         if statut_est_arrive(vol["statut"]):
             vols_deja_annonces.add(cle_vol(vol))
+
+        if statut_est_retarde(vol["statut"]):
+            retards_deja_annonces.add(cle_retard(vol))
 
 
 def envoyer_alertes_nouvelles_arrivees(vols):
@@ -336,12 +410,33 @@ def envoyer_alertes_nouvelles_arrivees(vols):
             f"🌍 Provenance : <b>{vol['ville']}</b>\n"
             f"📍 {badge_terminal(vol['terminal'])}\n"
             f"🕒 Heure prévue : {vol['heure_prevue']}\n"
-            f"📌 Statut : {vol['statut']}\n\n"
+            f"📌 Statut : {vol['statut_fr']}\n\n"
             f"🚖 Vols dans les 30 prochaines minutes : <b>{nb_30}</b>"
         )
 
         envoyer_telegram(message)
         vols_deja_annonces.add(cle)
+
+
+def envoyer_alertes_retards(vols):
+    for vol, retard, nouvelle_heure in retards_importants(vols):
+        cle = cle_retard(vol)
+        if cle in retards_deja_annonces:
+            continue
+
+        message = (
+            "⚠️ <b>RETARD IMPORTANT</b> ⚠️\n\n"
+            f"✈️ <b>{vol['compagnie']}</b>\n"
+            f"🌍 Provenance : <b>{vol['ville']}</b>\n"
+            f"📍 {badge_terminal(vol['terminal'])}\n"
+            f"🕒 Heure prévue : {vol['heure_prevue']}\n"
+            f"⏰ Nouvelle heure : {nouvelle_heure}\n"
+            f"⌛ Retard : <b>{retard} min</b>\n\n"
+            "🚖 Les chauffeurs peuvent adapter leur position."
+        )
+
+        envoyer_telegram(message)
+        retards_deja_annonces.add(cle)
 
 
 # =========================
@@ -354,8 +449,8 @@ def boucle_principale():
     ignorer_anciennes_commandes()
 
     envoyer_telegram(
-        "✅ <b>EasyTaxi Flight Alert V3 lancé</b>\n"
-        "Surveillance des arrivées T1 + T2 activée.\n\n"
+        "✅ <b>EasyTaxi Flight Alert V4 lancé</b>\n"
+        "Arrivées + retards importants activés.\n\n"
         "Commande disponible : /test"
     )
 
@@ -373,6 +468,7 @@ def boucle_principale():
 
             gerer_commandes(vols)
             envoyer_alertes_nouvelles_arrivees(vols)
+            envoyer_alertes_retards(vols)
 
             now = maintenant_paris()
             if dernier_resume is None or (now - dernier_resume).total_seconds() >= FREQUENCE_RESUME_SECONDES:
