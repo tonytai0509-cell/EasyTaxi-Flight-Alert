@@ -270,6 +270,7 @@ def envoyer_telegram(message):
                 "text": message,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
+                "reply_markup": json.dumps(PERSISTENT_KEYBOARD), # re-rattache le bouton fixe à chaque envoi
             },
             timeout=20,
         )
@@ -1284,7 +1285,10 @@ def repondre_telegram(chat_id, message):
     try:
         requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
-            data={"chat_id": chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True},
+            data={
+                "chat_id": chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True,
+                "reply_markup": json.dumps(PERSISTENT_KEYBOARD), # re-rattache le bouton fixe à chaque envoi
+            },
             timeout=15,
         )
     except Exception as e:
@@ -1390,19 +1394,16 @@ def repondre_callback(callback_id, texte=None):
 
 
 def envoyer_demande_nombre(chat_id, label):
-    """Ouvre une vraie zone de réponse Telegram (force_reply) pour que le chauffeur
-    tape son nombre. Le message et la réponse seront supprimés juste après traitement,
-    pour ne laisser que la confirmation finale dans le groupe."""
+    """Demande le nombre en réattachant explicitement le clavier fixe (au lieu de force_reply,
+    qui remplace temporairement le clavier fixe et le fait parfois disparaître pour de bon
+    une fois le message supprimé). Le message sera supprimé juste après traitement."""
     try:
         r = requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
             data={
                 "chat_id": chat_id,
-                "text": f"✏️ Combien de voitures à {label} ?",
-                "reply_markup": json.dumps({
-                    "force_reply": True,
-                    "input_field_placeholder": "Tape juste le nombre",
-                }),
+                "text": f"✏️ Tape le nombre pour {label} et envoie-le.",
+                "reply_markup": json.dumps(PERSISTENT_KEYBOARD),
             },
             timeout=15,
         )
