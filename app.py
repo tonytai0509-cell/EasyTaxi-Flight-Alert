@@ -1,6 +1,8 @@
 import os
 import re
 import time
+import json
+import html
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
@@ -18,15 +20,25 @@ RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "aerodatabox.p.rapidapi.com")
 AEROPORT_IATA = "NCE"
 PARIS = ZoneInfo("Europe/Paris")
 
+if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    raise SystemExit("TELEGRAM_TOKEN et TELEGRAM_CHAT_ID doivent être définis en variables d'environnement.")
+
 URL_SITE_AEROPORT = "https://www.nice.aeroport.fr/en/flights/arrivals"
 
 # Site officiel = gratuit, on peut vérifier souvent
 FREQUENCE_SITE_SECONDES = 60
 
-# API AeroDataBox = payante, on vérifie rarement et seulement les vols prioritaires
-FREQUENCE_API_LISTE_SECONDES = 900
+# API AeroDataBox = payante et quotée, on vérifie moins souvent et seulement les vols prioritaires
+FREQUENCE_API_LISTE_SECONDES = int(os.getenv("FREQUENCE_API_LISTE_SECONDES", "1800")) # 30 min par défaut
 MAX_LIVE_CALLS_PAR_CYCLE = int(os.getenv("MAX_LIVE_CALLS_PAR_CYCLE", "2"))
 FENETRE_LIVE_MINUTES = int(os.getenv("FENETRE_LIVE_MINUTES", "35"))
+
+# ---- Quota API mensuel (garde-fou dur, indépendant des fréquences ci-dessus) ----
+QUOTA_API_MENSUEL = int(os.getenv("QUOTA_API_MENSUEL", "5800"))
+QUOTA_MARGE_SECURITE = int(os.getenv("QUOTA_MARGE_SECURITE", "150")) # on s'arrête avant la vraie limite
+QUOTA_FICHIER = os.getenv("QUOTA_FICHIER", "quota_api.json")
+QUOTA_SEUIL_ALERTE = 0.9 # avertir Telegram quand 90% du quota est consommé
+quota_alerte_envoyee = False
 
 FREQUENCE_RESUME_SECONDES = 1800
 RETARD_IMPORTANT_MINUTES = 20
@@ -202,8 +214,74 @@ def envoyer_telegram(message):
 
 
 # =========================
-# SITE AÉROPORT GRATUIT
+# QUOTA API MENSUEL (garde-fou dur)
 # =========================
+
+def _charger_quota():
+    try:
+        with open(QUOTA_FICHIER, "r") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    mois_actuel = maintenant().strftime("%Y-%m")
+    if data.get("mois") != mois_actuel:
+        data = {"mois": mois_actuel, "compteur": 0}
+    return data
+
+
+def _sauver_quota(data):
+    try:
+        with open(QUOTA_FICHIER, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print("Erreur sauvegarde quota:", e)
+
+
+def quota_restant():
+    data = _charger_quota()
+    return max(0, QUOTA_API_MENSUEL - data["compteur"])
+
+
+def quota_utilise():
+    return _charger_quota()["compteur"]
+
+
+def api_disponible(cout=1):
+    """Vérifie qu'on peut encore consommer `cout` appels ce mois-ci, marge de sécurité incluse."""
+    return quota_restant() >= cout + QUOTA_MARGE_SECURITE
+
+
+def consommer_quota(cout=1):
+    global quota_alerte_envoyee
+    data = _charger_quota()
+    data["compteur"] += cout
+    _sauver_quota(data)
+
+    ratio = data["compteur"] / QUOTA_API_MENSUEL
+    if ratio >= QUOTA_SEUIL_ALERTE and not quota_alerte_envoyee:
+        envoyer_telegram(
+            "⚠️ <b>Quota API bientôt atteint</b>\n"
+            f"{data['compteur']}/{QUOTA_API_MENSUEL} appels utilisés ce mois-ci.\n"
+            "Le bot va basculer sur le site aéroport uniquement jusqu'au mois prochain."
+        )
+        quota_alerte_envoyee = True
+
+
+def jours_restants_mois():
+    now = maintenant()
+    if now.month == 12:
+        prochain = now.replace(year=now.year + 1, month=1, day=1)
+    else:
+        prochain = now.replace(month=now.month + 1, day=1)
+    return max(1, (prochain.date() - now.date()).days)
+
+
+def budget_journalier_calls():
+    """Nombre d'appels API qu'on peut encore se permettre par jour jusqu'à la fin du mois."""
+    return max(0, quota_restant() // jours_restants_mois())
+
+
+
 
 def recuperer_site_aeroport():
     headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/12.0"}
@@ -353,8 +431,10 @@ def minutes_retard(prevu, actuel):
 # =========================
 
 def recuperer_arrivees_aerodatabox():
-    if not RAPIDAPI_KEY or RAPIDAPI_KEY == "COLLE_TA_CLE_RAPIDAPI_ICI":
+    if not RAPIDAPI_KEY:
         raise Exception("Clé RapidAPI absente")
+    if not api_disponible(1):
+        raise Exception(f"Quota API mensuel atteint ({quota_utilise()}/{QUOTA_API_MENSUEL}), passage en mode site uniquement")
 
     debut = maintenant() - timedelta(minutes=15)
     fin = maintenant() + timedelta(hours=2)
@@ -371,6 +451,7 @@ def recuperer_arrivees_aerodatabox():
     headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": RAPIDAPI_HOST}
 
     r = requests.get(url, headers=headers, params=params, timeout=25)
+    consommer_quota(1)
     if not r.ok:
         raise Exception(f"AeroDataBox {r.status_code}: {r.text[:250]}")
 
@@ -541,10 +622,14 @@ def recuperer_live_status(numero):
     if cached and (maintenant() - cached["time"]).total_seconds() < 15 * 60:
         return cached["status"]
 
+    if not api_disponible(1):
+        return None
+
     url = f"https://{RAPIDAPI_HOST}/flights/number/{numero}"
     headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": RAPIDAPI_HOST}
     try:
         r = requests.get(url, headers=headers, timeout=20)
+        consommer_quota(1)
         if not r.ok:
             return None
         data = r.json()
@@ -575,9 +660,13 @@ def enrichir_live_status(vols):
     candidats = [v for v in candidats if not est_arrive_ou_approche(v.get("site_status"))]
     candidats.sort(key=lambda v: (-score_gros_vol(v), v.get("dt_actuel") or v.get("dt_prevu") or maintenant()))
 
+    limite_cycle = min(MAX_LIVE_CALLS_PAR_CYCLE, budget_journalier_calls())
+
     appels = 0
     for v in candidats:
-        if appels >= MAX_LIVE_CALLS_PAR_CYCLE:
+        if appels >= limite_cycle:
+            break
+        if not api_disponible(1):
             break
         status = recuperer_live_status(v["numero"])
         appels += 1
@@ -596,17 +685,38 @@ def niveau_affluence(nb30):
     return "🟢 Calme"
 
 
+def icone_statut_court(v):
+    status = v.get("site_status") or v.get("live_status") or v.get("status") or ""
+    retard = v.get("retard", 0)
+
+    if est_pose(status):
+        return "✅"
+    if est_approche(status):
+        return "🛬"
+    if est_en_route(status):
+        return "✈️"
+    if "cancel" in status.lower() or "annul" in status.lower():
+        return "❌"
+    if retard >= RETARD_IMPORTANT_MINUTES:
+        return f"⏰+{retard}"
+    if retard >= 10:
+        return f"🟡+{retard}"
+    return "🟢"
+
+
 def ligne_vol(v):
-    return f"• {heure_lisible(v)} {v['provenance']} - {v['compagnie']} - {statut_lisible(v)}"
+    heure = heure_lisible(v)
+    ville = html.escape((v['provenance'] or "")[:13])
+    compagnie = html.escape((v['compagnie'] or "")[:11])
+    return f"{heure:<12} {ville:<13} {compagnie:<11} {icone_statut_court(v)}"
 
 
 def bloc_terminal(titre, vols):
     if not vols:
         return f"{titre} : 0\n"
     lignes = [f"{titre} : {len(vols)}"]
-    for v in vols:
-        lignes.append(ligne_vol(v))
-    return "\n".join(lignes) + "\n"
+    corps = "\n".join(ligne_vol(v) for v in vols)
+    return f"{lignes[0]}\n<code>{corps}</code>\n"
 
 
 def creer_resume(vols):
@@ -627,9 +737,11 @@ def creer_resume(vols):
         f"⏱️ 30min : <b>{len(d30)}</b> (🔵{len(t1_30)} / 🟣{len(t2_30)})\n"
         f"🕐 1h : <b>{len(d60)}</b> (🔵{len(t1_60)} / 🟣{len(t2_60)})\n\n"
         "🛬 <b>Prochains 30min</b>\n"
+        "<i>🟢 prévu · 🟡/⏰ retard · 🛬 approche · ✅ posé</i>\n"
     )
     msg += bloc_terminal("🔵 T1", t1_30)
     msg += bloc_terminal("🟣 T2", t2_30)
+    msg += f"\n🔌 API : {quota_utilise()}/{QUOTA_API_MENSUEL} ce mois-ci"
     return msg.strip()
 
 
@@ -691,8 +803,10 @@ def envoyer_alertes(vols):
 def boucle_principale():
     global dernier_resume
     envoyer_telegram(
-        "✅ <b>EasyTaxi Flight Alert V12 Hybride lancé</b>\n"
-        "Site aéroport gratuit + API AeroDataBox optimisée."
+        "✅ <b>EasyTaxi Flight Alert V13 lancé</b>\n"
+        "Site aéroport gratuit + API AeroDataBox (quota géré).\n"
+        f"🔌 Quota API : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés ce mois-ci "
+        f"({quota_restant()} restants, ~{budget_journalier_calls()}/jour)."
     )
 
     try:
@@ -723,3 +837,4 @@ def boucle_principale():
 
 if __name__ == "__main__":
     boucle_principale()
+
