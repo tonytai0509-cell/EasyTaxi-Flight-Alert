@@ -10,8 +10,7 @@ from zoneinfo import ZoneInfo
 # CONFIGURATION
 # =========================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8729024731:AAFsaKxKc_8bgxwvno2PqJ-c_ZcEqRovPHs
-")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8729024731:AAFsaKxKc_8bgxwvno2PqJ-c_ZcEqRovPHs")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004321946575")
 
 URL_ARRIVEES = "https://www.nice.aeroport.fr/en/flights/arrivals"
