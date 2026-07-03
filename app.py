@@ -1333,6 +1333,8 @@ def clavier_nombres(loc):
             ligne = []
     if ligne:
         lignes.append(ligne)
+    if loc == "t2_lineaire":
+        lignes.append([{"text": "A4 (½ parking)", "callback_data": f"cnt:{loc}:A4"}])
     lignes.append([{"text": "✏️ Autre nombre", "callback_data": f"custom:{loc}"}])
     lignes.append([{"text": "⬅️ Retour", "callback_data": "loc:retour"}])
     return {"inline_keyboard": lignes}
@@ -1439,19 +1441,23 @@ def traiter_callback(callback):
 
     if data.startswith("cnt:"):
         _, loc, nombre_str = data.split(":", 2)
-        try:
-            nombre = int(nombre_str)
-        except ValueError:
-            repondre_callback(callback_id)
-            return
+        if nombre_str == "A4":
+            nombre = "A4"
+        else:
+            try:
+                nombre = int(nombre_str)
+            except ValueError:
+                repondre_callback(callback_id)
+                return
         terminal, mode = LOC_INFOS.get(loc, (None, None))
         if terminal:
             definir_position(terminal, nombre, mode, qui)
             repondre_callback(callback_id, "Enregistré ✅")
-            editer_message_telegram(
-                chat_id, message_id,
-                f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures"
-            )
+            if nombre == "A4":
+                texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>A4</b> (½ parking)"
+            else:
+                texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures"
+            editer_message_telegram(chat_id, message_id, texte_confirmation)
         else:
             repondre_callback(callback_id)
         return
