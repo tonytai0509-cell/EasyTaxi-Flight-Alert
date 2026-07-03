@@ -451,6 +451,11 @@ def recuperer_vols_site():
         if terminal in ["1", "2"]:
             heure_status = extraire_heure(status)
             actuel = heure_status or heure
+            dt_prevu = heure_aujourdhui(heure)
+            retard = minutes_retard(heure, actuel)
+            # dt_actuel dérivé de dt_prevu + retard (déjà corrigé pour le passage de minuit),
+            # plutôt que reparsé indépendamment (qui aurait le même bug de jour).
+            dt_actuel = (dt_prevu + timedelta(minutes=retard)) if dt_prevu else heure_aujourdhui(actuel)
             vols.append({
                 "numero": numero,
                 "compagnie": compagnie,
@@ -459,11 +464,11 @@ def recuperer_vols_site():
                 "status": "Expected",
                 "live_status": None,
                 "site_status": status,
-                "dt_prevu": heure_aujourdhui(heure),
-                "dt_actuel": heure_aujourdhui(actuel),
+                "dt_prevu": dt_prevu,
+                "dt_actuel": dt_actuel,
                 "prevu": heure,
                 "actuel": actuel,
-                "retard": minutes_retard(heure, actuel),
+                "retard": retard,
                 "source": "site"
             })
 
@@ -479,14 +484,26 @@ def heure_aujourdhui(hh):
 
 
 def minutes_retard(prevu, actuel):
+    """Calcule le retard en minutes entre deux heures HH:MM, en gérant le passage à minuit :
+    on teste l'heure 'actuel' la veille, le jour même et le lendemain, et on garde
+    l'interprétation qui donne l'écart le plus petit (la plus plausible)."""
     try:
-        a = heure_aujourdhui(prevu)
-        b = heure_aujourdhui(actuel)
-        if not a or not b:
-            return 0
-        return max(0, int((b - a).total_seconds() // 60))
+        h1, m1 = map(int, prevu.split(":"))
+        h2, m2 = map(int, actuel.split(":"))
     except Exception:
         return 0
+
+    base = maintenant().replace(second=0, microsecond=0)
+    a = base.replace(hour=h1, minute=m1)
+
+    meilleur_ecart = None
+    for jours in (-1, 0, 1):
+        b = base.replace(hour=h2, minute=m2) + timedelta(days=jours)
+        ecart = (b - a).total_seconds() / 60
+        if meilleur_ecart is None or abs(ecart) < abs(meilleur_ecart):
+            meilleur_ecart = ecart
+
+    return max(0, int(meilleur_ecart))
 
 
 # =========================
@@ -1362,6 +1379,26 @@ def repondre_callback(callback_id, texte=None):
         logger.error(f"Erreur answerCallbackQuery: {e}")
 
 
+def envoyer_demande_nombre(chat_id, label):
+    """Ouvre une vraie zone de réponse Telegram (force_reply) pour que le chauffeur
+    tape son nombre, puisse le corriger avant d'envoyer, comme un message normal."""
+    try:
+        requests.post(
+            f"{TELEGRAM_API_URL}/sendMessage",
+            data={
+                "chat_id": chat_id,
+                "text": f"✏️ Combien de voitures à {label} ?",
+                "reply_markup": json.dumps({
+                    "force_reply": True,
+                    "input_field_placeholder": "Tape juste le nombre",
+                }),
+            },
+            timeout=15,
+        )
+    except Exception as e:
+        logger.error(f"Erreur envoi demande nombre: {e}")
+
+
 def traiter_callback(callback):
     """Gère les taps sur les boutons du clavier de signalement rapide."""
     data = callback.get("data", "")
@@ -1398,7 +1435,7 @@ def traiter_callback(callback):
             repondre_callback(callback_id, "Enregistré ✅")
             editer_message_telegram(
                 chat_id, message_id,
-                f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures (signalé par {qui})"
+                f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures"
             )
         else:
             repondre_callback(callback_id)
@@ -1414,7 +1451,8 @@ def traiter_callback(callback):
         attente_nombre_personnalise[(chat_id, user_id)] = (terminal, mode)
         repondre_callback(callback_id)
         label = LOC_LABELS.get(loc, loc)
-        editer_message_telegram(chat_id, message_id, f"✏️ Écris le nombre pour {label} (juste le chiffre) :")
+        editer_message_telegram(chat_id, message_id, f"✏️ Réponds au message ci-dessous 👇 pour {label}")
+        envoyer_demande_nombre(chat_id, label)
         return
 
     repondre_callback(callback_id)
@@ -1561,10 +1599,14 @@ def label_position(terminal, mode):
     if terminal == "t1":
         if mode == "reserve":
             return "🅿️ T1 (Babel)"
+        if mode == "lineaire":
+            return "🚕 T1 (linéaire)"
         return "🚕 T1"
     else:
         if mode == "parking":
             return "🅿️ T2 (parking)"
+        if mode == "lineaire":
+            return "🚕 T2 (linéaire)"
         return "🚕 T2"
 
 
@@ -1647,7 +1689,7 @@ def traiter_commandes(vols, trains=None):
                     nombre = int(m.group())
                     qui = (message.get("from") or {}).get("first_name", "quelqu'un")
                     definir_position(terminal, nombre, mode, qui)
-                    repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures (signalé par {qui})")
+                    repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures")
                 else:
                     repondre_telegram(chat_id, "Envoie juste un nombre, ex: 12")
                 continue
@@ -1660,7 +1702,7 @@ def traiter_commandes(vols, trains=None):
                 terminal, nombre, mode = resultat
                 qui = (message.get("from") or {}).get("first_name", "quelqu'un")
                 definir_position(terminal, nombre, mode, qui)
-                repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures (signalé par {qui})")
+                repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures")
             continue
 
         partie = texte.split()
