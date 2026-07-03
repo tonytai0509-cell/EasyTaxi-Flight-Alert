@@ -1253,6 +1253,13 @@ def recuperer_updates_telegram():
     try:
         r = requests.get(f"{TELEGRAM_API_URL}/getUpdates", params=params, timeout=25)
         if not r.ok:
+            if r.status_code == 409:
+                logger.error(
+                    "getUpdates 409 Conflict : une AUTRE instance du bot utilise le même token en même temps "
+                    "(vérifier qu'il n'y a qu'un seul déploiement actif sur Railway)."
+                )
+            else:
+                logger.error(f"Erreur getUpdates Telegram ({r.status_code}): {r.text[:200]}")
             return []
         return r.json().get("result", [])
     except Exception as e:
