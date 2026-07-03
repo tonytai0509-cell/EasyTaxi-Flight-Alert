@@ -3,10 +3,28 @@ import re
 import time
 import json
 import html
+import logging
+import logging.handlers
+import sqlite3
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+
+# =========================
+# LOGGING
+# =========================
+
+LOG_FICHIER = os.getenv("LOG_FICHIER", "easytaxi.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.handlers.RotatingFileHandler(LOG_FICHIER, maxBytes=2_000_000, backupCount=3, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger("easytaxi")
 
 # =========================
 # CONFIGURATION
@@ -42,6 +60,28 @@ quota_alerte_envoyee = False
 
 FREQUENCE_RESUME_SECONDES = 1800
 RETARD_IMPORTANT_MINUTES = 20
+
+# ---- Historique (SQLite léger, local) ----
+DB_FICHIER = os.getenv("DB_FICHIER", "historique_vols.db")
+
+# ---- Commandes Telegram (polling gratuit, données cache uniquement) ----
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+dernier_update_id = None
+
+# ---- Résumé du matin ----
+RESUME_MATIN_HEURE = int(os.getenv("RESUME_MATIN_HEURE", "6"))
+dernier_resume_matin = None
+
+# ---- Watchdog scraping site ----
+WATCHDOG_SEUIL_ECHECS = 3
+echecs_site_consecutifs = 0
+alerte_watchdog_envoyee = False
+
+# ---- Nettoyage quotidien des caches ----
+dernier_nettoyage = None
+
+# ---- Annulations ----
+annules_deja_annonces = set()
 
 vols_cache = []
 derniere_maj_site = None
@@ -208,9 +248,9 @@ def envoyer_telegram(message):
             timeout=20,
         )
         if not r.ok:
-            print("Erreur Telegram:", r.text)
+            logger.error(f"Erreur Telegram: {r.text}")
     except Exception as e:
-        print("Erreur Telegram:", e)
+        logger.error(f"Erreur Telegram: {e}")
 
 
 # =========================
@@ -234,7 +274,7 @@ def _sauver_quota(data):
         with open(QUOTA_FICHIER, "w") as f:
             json.dump(data, f)
     except Exception as e:
-        print("Erreur sauvegarde quota:", e)
+        logger.error(f"Erreur sauvegarde quota: {e}")
 
 
 def quota_restant():
@@ -555,6 +595,25 @@ def fusionner_site_api(vols_site, vols_api):
     return dedoublonner_vols(resultats)
 
 
+def _verifier_watchdog_site(vols_site):
+    """Alerte si le scraping du site retourne 0 vol plusieurs fois de suite
+    (signe probable que la structure du site a changé)."""
+    global echecs_site_consecutifs, alerte_watchdog_envoyee
+    if len(vols_site) == 0:
+        echecs_site_consecutifs += 1
+        logger.warning(f"Scraping site: 0 vol trouvé ({echecs_site_consecutifs}/{WATCHDOG_SEUIL_ECHECS})")
+        if echecs_site_consecutifs >= WATCHDOG_SEUIL_ECHECS and not alerte_watchdog_envoyee:
+            envoyer_telegram(
+                "🚨 <b>Alerte scraping</b>\n"
+                "Le site aéroport ne retourne plus aucun vol depuis plusieurs vérifications.\n"
+                "La structure de la page a peut-être changé — vérification manuelle recommandée."
+            )
+            alerte_watchdog_envoyee = True
+    else:
+        echecs_site_consecutifs = 0
+        alerte_watchdog_envoyee = False
+
+
 def mettre_a_jour_cache_si_besoin(force=False):
     global vols_cache, derniere_maj_site, derniere_maj_api
 
@@ -563,8 +622,9 @@ def mettre_a_jour_cache_si_besoin(force=False):
         try:
             vols_site = recuperer_vols_site()
             derniere_maj_site = maintenant()
+            _verifier_watchdog_site(vols_site)
         except Exception as e:
-            print("Erreur site aéroport:", e)
+            logger.warning(f"Erreur site aéroport: {e}")
 
     vols_api = None
     if force or derniere_maj_api is None or (maintenant() - derniere_maj_api).total_seconds() >= FREQUENCE_API_LISTE_SECONDES:
@@ -572,7 +632,7 @@ def mettre_a_jour_cache_si_besoin(force=False):
             vols_api = recuperer_arrivees_aerodatabox()
             derniere_maj_api = maintenant()
         except Exception as e:
-            print("Erreur API liste:", e)
+            logger.warning(f"Erreur API liste: {e}")
 
     if vols_site is None and vols_api is None:
         return vols_cache
@@ -679,6 +739,27 @@ def enrichir_live_status(vols):
 # RÉSUMÉ ET ALERTES
 # =========================
 
+def nettoyer_caches_si_besoin():
+    """Purge quotidienne des sets anti-spam et des entrées live_status trop vieilles,
+    pour éviter une fuite mémoire sur une exécution longue."""
+    global dernier_nettoyage
+    aujourdhui = maintenant().date()
+    if dernier_nettoyage == aujourdhui:
+        return
+    approches_deja_annoncees.clear()
+    poses_deja_annonces.clear()
+    retards_deja_annonces.clear()
+    annules_deja_annonces.clear()
+
+    expiration = maintenant() - timedelta(hours=6)
+    obsoletes = [k for k, v in live_status_cache.items() if v["time"] < expiration]
+    for k in obsoletes:
+        del live_status_cache[k]
+
+    dernier_nettoyage = aujourdhui
+    logger.info("Nettoyage quotidien des caches effectué.")
+
+
 def niveau_affluence(nb30):
     if nb30 >= 8: return "🔴 Forte"
     if nb30 >= 4: return "🟠 Moyenne"
@@ -757,10 +838,69 @@ def initialiser_sans_spam(vols):
             retards_deja_annonces[cle] = v["retard"]
 
 
+def init_db():
+    try:
+        conn = sqlite3.connect(DB_FICHIER)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS vols_historique (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT,
+                heure_prevue TEXT,
+                heure_reelle TEXT,
+                numero TEXT,
+                compagnie TEXT,
+                provenance TEXT,
+                terminal TEXT,
+                retard INTEGER,
+                statut TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Erreur init DB historique: {e}")
+
+
+def enregistrer_vol_historique(v):
+    try:
+        conn = sqlite3.connect(DB_FICHIER)
+        conn.execute(
+            "INSERT INTO vols_historique "
+            "(date, heure_prevue, heure_reelle, numero, compagnie, provenance, terminal, retard, statut) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                maintenant().strftime("%Y-%m-%d"),
+                v.get("prevu"), v.get("actuel"), v.get("numero"),
+                v.get("compagnie"), v.get("provenance"), v.get("terminal"),
+                v.get("retard", 0), v.get("site_status") or v.get("status"),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Erreur écriture DB historique: {e}")
+
+
+def est_annule(status):
+    s = (status or "").lower()
+    return "cancel" in s or "annul" in s
+
+
 def envoyer_alertes(vols):
     for v in vols:
         cle = cle_vol(v)
         status = v.get("site_status") or v.get("live_status") or v.get("status")
+
+        if est_annule(status) and cle not in annules_deja_annonces:
+            envoyer_telegram(
+                "❌ <b>VOL ANNULÉ</b>\n\n"
+                f"🌍 <b>{v['provenance']}</b>\n"
+                f"✈️ {v['compagnie']}\n"
+                f"📍 {emoji_terminal(v['terminal'])} - {label_terminal(v['terminal'])}\n"
+                f"🕒 Prévu {v['prevu']}"
+            )
+            annules_deja_annonces.add(cle)
+            continue
 
         if est_approche(status) and cle not in approches_deja_annoncees:
             envoyer_telegram(
@@ -782,6 +922,7 @@ def envoyer_alertes(vols):
                 f"{sortie_passagers(v)}"
             )
             poses_deja_annonces.add(cle)
+            enregistrer_vol_historique(v)
 
         if v["retard"] >= RETARD_IMPORTANT_MINUTES and not est_arrive_ou_approche(status):
             ancien = retards_deja_annonces.get(cle)
@@ -797,14 +938,151 @@ def envoyer_alertes(vols):
 
 
 # =========================
-# BOUCLE
+# COMMANDES TELEGRAM (getUpdates = API Telegram, gratuite et illimitée)
+# Ces commandes ne lisent QUE vols_cache : elles ne déclenchent JAMAIS
+# d'appel RapidAPI, donc aucun impact sur le quota mensuel.
 # =========================
+
+def recuperer_updates_telegram():
+    global dernier_update_id
+    params = {"timeout": 0}
+    if dernier_update_id is not None:
+        params["offset"] = dernier_update_id + 1
+    try:
+        r = requests.get(f"{TELEGRAM_API_URL}/getUpdates", params=params, timeout=15)
+        if not r.ok:
+            return []
+        return r.json().get("result", [])
+    except Exception as e:
+        logger.error(f"Erreur getUpdates Telegram: {e}")
+        return []
+
+
+def repondre_telegram(chat_id, message):
+    try:
+        requests.post(
+            f"{TELEGRAM_API_URL}/sendMessage",
+            data={"chat_id": chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True},
+            timeout=15,
+        )
+    except Exception as e:
+        logger.error(f"Erreur réponse commande Telegram: {e}")
+
+
+def commande_prochain(vols):
+    a_venir = [
+        v for v in vols
+        if v.get("dt_actuel") and v["dt_actuel"].astimezone(PARIS) >= maintenant()
+        and not est_annule(v.get("site_status") or v.get("live_status") or v.get("status"))
+    ]
+    a_venir.sort(key=lambda v: v["dt_actuel"])
+    if not a_venir:
+        return "Aucun vol à venir dans les données actuelles (cache site, sans appel API)."
+    v = a_venir[0]
+    return (
+        "🛬 <b>Prochain vol</b>\n"
+        f"{heure_lisible(v)} · {v['provenance']} · {v['compagnie']}\n"
+        f"{emoji_terminal(v['terminal'])} · {statut_lisible(v)}"
+    )
+
+
+def commande_terminal(vols, terminal):
+    filtres = [v for v in vols_dans_minutes(vols, 60) if v["terminal"] == terminal]
+    if not filtres:
+        return f"Aucun vol prévu en Terminal {terminal} dans l'heure (données cache)."
+    corps = "\n".join(ligne_vol(v) for v in filtres[:10])
+    return f"📍 <b>Terminal {terminal}</b> (1h)\n<code>{corps}</code>"
+
+
+def commande_vol(vols, numero):
+    numero = (numero or "").upper().replace(" ", "")
+    for v in vols:
+        if (v.get("numero") or "").upper().replace(" ", "") == numero:
+            return (
+                f"✈️ <b>{v['numero']}</b> · {v['compagnie']}\n"
+                f"De {v['provenance']} · {emoji_terminal(v['terminal'])}\n"
+                f"{heure_lisible(v)} · {statut_lisible(v)}"
+            )
+    return (
+        f"Vol {numero} introuvable dans les données actuelles.\n"
+        "<i>Pas de recherche API déclenchée pour préserver le quota.</i>"
+    )
+
+
+def commande_quota():
+    return f"🔌 Quota API : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés, {quota_restant()} restants ce mois-ci."
+
+
+def commande_aide():
+    return (
+        "📋 <b>Commandes disponibles</b>\n"
+        "/prochain — prochain vol attendu\n"
+        "/t1 — vols Terminal 1 (1h)\n"
+        "/t2 — vols Terminal 2 (1h)\n"
+        "/vol NUMERO — chercher un vol précis\n"
+        "/quota — quota API restant\n\n"
+        "<i>Toutes ces commandes utilisent uniquement les données déjà en cache "
+        "(site aéroport gratuit) — aucun appel API supplémentaire n'est déclenché.</i>"
+    )
+
+
+def traiter_commandes(vols):
+    global dernier_update_id
+    updates = recuperer_updates_telegram()
+    for u in updates:
+        dernier_update_id = u["update_id"]
+        message = u.get("message") or u.get("channel_post")
+        if not message:
+            continue
+        texte = (message.get("text") or "").strip()
+        if not texte.startswith("/"):
+            continue
+        chat_id = message["chat"]["id"]
+        partie = texte.split()
+        commande = partie[0].lower().split("@")[0] # gère /prochain@NomDuBot
+
+        if commande in ("/prochain", "/next"):
+            repondre_telegram(chat_id, commande_prochain(vols))
+        elif commande == "/t1":
+            repondre_telegram(chat_id, commande_terminal(vols, "1"))
+        elif commande == "/t2":
+            repondre_telegram(chat_id, commande_terminal(vols, "2"))
+        elif commande in ("/vol", "/flight") and len(partie) > 1:
+            repondre_telegram(chat_id, commande_vol(vols, partie[1]))
+        elif commande == "/quota":
+            repondre_telegram(chat_id, commande_quota())
+        elif commande in ("/aide", "/help", "/start"):
+            repondre_telegram(chat_id, commande_aide())
+        else:
+            repondre_telegram(chat_id, "Commande inconnue. Tape /aide pour la liste.")
+
+
+# =========================
+# RÉSUMÉ DU MATIN
+# =========================
+
+def envoyer_resume_matin_si_besoin(vols):
+    global dernier_resume_matin
+    aujourdhui = maintenant().date()
+    if maintenant().hour != RESUME_MATIN_HEURE or dernier_resume_matin == aujourdhui:
+        return
+    d60 = vols_dans_minutes(vols, 60)
+    envoyer_telegram(
+        "☀️ <b>Bonjour !</b>\n"
+        f"{len(d60)} vols attendus dans l'heure qui vient.\n"
+        "Bonne journée, le suivi reprend normalement 🚖"
+    )
+    dernier_resume_matin = aujourdhui
+
+
+
 
 def boucle_principale():
     global dernier_resume
+    init_db()
     envoyer_telegram(
-        "✅ <b>EasyTaxi Flight Alert V13 lancé</b>\n"
-        "Site aéroport gratuit + API AeroDataBox (quota géré).\n"
+        "✅ <b>EasyTaxi Flight Alert V14 lancé</b>\n"
+        "Site aéroport gratuit + API AeroDataBox (quota géré) + commandes /aide.\n"
         f"🔌 Quota API : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés ce mois-ci "
         f"({quota_restant()} restants, ~{budget_journalier_calls()}/jour)."
     )
@@ -816,25 +1094,47 @@ def boucle_principale():
         envoyer_telegram(creer_resume(vols))
         dernier_resume = maintenant()
     except Exception as e:
+        logger.error(f"Erreur démarrage: {e}")
         envoyer_telegram(f"⚠️ Erreur démarrage : {e}")
+        vols = []
 
     while True:
         try:
+            nettoyer_caches_si_besoin()
+
             vols = mettre_a_jour_cache_si_besoin(force=False)
             vols = enrichir_live_status(vols)
             envoyer_alertes(vols)
+
+            # Commandes Telegram : API Telegram uniquement, jamais RapidAPI
+            traiter_commandes(vols)
+
+            envoyer_resume_matin_si_besoin(vols)
 
             if dernier_resume is None or (maintenant() - dernier_resume).total_seconds() >= FREQUENCE_RESUME_SECONDES:
                 envoyer_telegram(creer_resume(vols))
                 dernier_resume = maintenant()
 
         except Exception as e:
-            print("Erreur boucle:", e)
+            logger.error(f"Erreur boucle: {e}")
             envoyer_telegram(f"⚠️ Erreur EasyTaxi Flight Alert : {e}")
 
         time.sleep(10)
 
 
-if __name__ == "__main__":
-    boucle_principale()
+def main():
+    """Supervisor : si boucle_principale plante malgré tout, on redémarre au lieu de mourir."""
+    while True:
+        try:
+            boucle_principale()
+        except Exception as e:
+            logger.critical(f"Crash total du bot : {e}")
+            try:
+                envoyer_telegram(f"🚨 <b>Crash total</b> : {e}\nRedémarrage automatique dans 30s.")
+            except Exception:
+                pass
+            time.sleep(30)
 
+
+if __name__ == "__main__":
+    main()
