@@ -17,8 +17,7 @@ RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "aerodatabox.p.rapidapi.com")
 AEROPORT_IATA = "NCE"
 PARIS = ZoneInfo("Europe/Paris")
 
-# Optimisation quota :
-# 1 appel API toutes les 15 minutes ≈ sous 6000 unités/mois
+# Quota : 1 appel toutes les 15 min.
 FREQUENCE_API_SECONDES = 900
 FREQUENCE_RESUME_SECONDES = 1800
 RETARD_IMPORTANT_MINUTES = 20
@@ -55,22 +54,13 @@ def hhmm(dt):
     return dt.astimezone(PARIS).strftime("%H:%M")
 
 
-def terminal_emoji(terminal):
+def emoji_terminal(terminal):
     terminal = str(terminal or "").strip()
     if terminal == "1":
         return "🔵T1"
     if terminal == "2":
         return "🟣T2"
     return "⚪T?"
-
-
-def terminal_label(terminal):
-    terminal = str(terminal or "").strip()
-    if terminal == "1":
-        return "🔵 T1"
-    if terminal == "2":
-        return "🟣 T2"
-    return "⚪ T?"
 
 
 def statut_fr(status):
@@ -89,6 +79,32 @@ def statut_fr(status):
 def est_arrive_ou_approche(status):
     s = (status or "").lower()
     return "arriv" in s or "landed" in s or "approach" in s or "landing" in s
+
+
+def nettoyer_nom(nom):
+    nom = (nom or "").upper().strip()
+    remplacements = {
+        "AJACCIO/NAPOLÉON BONAPARTE": "AJACCIO",
+        "BASTIA/PORETTA": "BASTIA",
+        "BIARRITZ/ANGLET/BAYONNE": "BIARRITZ",
+        "PARIS CHARLES DE GAULLE": "PARIS CDG",
+        "PARIS ORLY": "PARIS ORLY",
+        "LONDON": "LONDRES",
+        "WARSAW": "VARSOVIE",
+    }
+    return remplacements.get(nom, nom)
+
+
+def nettoyer_compagnie(nom):
+    nom = (nom or "").upper().strip()
+    remplacements = {
+        "NORWEGIAN AIR SWEDEN": "NORWEGIAN",
+        "NORWEGIAN AIR SHUTTLE": "NORWEGIAN",
+        "TRANSAVIA FRANCE": "TRANSAVIA",
+        "BRITISH AIRWAYS": "BRITISH",
+        "ROYAL AIR MAROC": "RAM",
+    }
+    return remplacements.get(nom, nom)
 
 
 def cle_arrivee(v):
@@ -162,15 +178,15 @@ def recuperer_arrivees_aerodatabox():
         airline = item.get("airline", {}) or {}
 
         numero = item.get("number") or item.get("callSign") or "N/A"
-        compagnie = (airline.get("name") or "N/A").upper()
+        compagnie = nettoyer_compagnie(airline.get("name") or "N/A")
 
         dep_airport = departure.get("airport", {}) or {}
-        provenance = (
+        provenance = nettoyer_nom(
             dep_airport.get("municipalityName")
             or dep_airport.get("name")
             or dep_airport.get("iata")
-            or "Inconnue"
-        ).upper()
+            or "INCONNUE"
+        )
 
         scheduled = arrival.get("scheduledTime", {}) or {}
         revised = arrival.get("revisedTime", {}) or {}
@@ -206,8 +222,20 @@ def recuperer_arrivees_aerodatabox():
             "retard": retard,
         })
 
-    vols.sort(key=lambda v: v["dt_actuel"] or v["dt_prevu"] or maintenant())
-    return vols
+    # Supprime les doublons de codeshare : même ville, même heure, même terminal.
+    uniques = {}
+    for v in vols:
+        cle = f"{v['actuel']}-{v['provenance']}-{v['terminal']}"
+        if cle not in uniques:
+            uniques[cle] = v
+        else:
+            # on garde le nom de compagnie le plus court/clair
+            if len(v["compagnie"]) < len(uniques[cle]["compagnie"]):
+                uniques[cle] = v
+
+    resultat = list(uniques.values())
+    resultat.sort(key=lambda v: (v["dt_actuel"] or v["dt_prevu"] or maintenant(), v["terminal"]))
+    return resultat
 
 
 def mettre_a_jour_cache_si_besoin(force=False):
@@ -224,7 +252,7 @@ def mettre_a_jour_cache_si_besoin(force=False):
 
 
 # =========================
-# RESUME COMPACT
+# RÉSUMÉ UNIQUE ET COMPACT
 # =========================
 
 def vols_dans_minutes(vols, minutes):
@@ -245,17 +273,20 @@ def niveau_affluence(nb30):
 
 
 def ligne_vol(v):
-    # Format compact : 18:45 PARIS - EASYJET - Prévu
-    return f"{v['actuel']} {v['provenance']} - {v['compagnie']} - {v['status_fr']}"
+    statut = v["status_fr"]
+    if v["retard"] >= RETARD_IMPORTANT_MINUTES and not est_arrive_ou_approche(v["status"]):
+        statut = f"+{v['retard']}min"
+    return f"• {v['actuel']} {v['provenance']} - {v['compagnie']} - {statut}"
 
 
 def bloc_terminal(titre, vols):
     if not vols:
-        return f"{titre} : aucun\n"
-
+        return f"{titre} : 0\n"
     lignes = [f"{titre} : {len(vols)}"]
-    for v in vols[:6]:
-        lignes.append(f"• {ligne_vol(v)}")
+    for v in vols[:5]:
+        lignes.append(ligne_vol(v))
+    if len(vols) > 5:
+        lignes.append(f"• +{len(vols) - 5} autres")
     return "\n".join(lignes) + "\n"
 
 
@@ -274,25 +305,22 @@ def creer_resume(vols):
         if v["retard"] >= RETARD_IMPORTANT_MINUTES and not est_arrive_ou_approche(v["status"])
     ]
 
-    message = (
+    msg = (
         "✈️ <b>EASYTAXI FLIGHT ALERT</b>\n"
-        f"🕒 {maintenant().strftime('%H:%M')} | 🚖 {niveau_affluence(len(d30))} | ⚠️ {len(retards)} retards\n\n"
-        f"⏱️ <b>30 min : {len(d30)} vols</b> "
-        f"(🔵T1 {len(t1_30)} / 🟣T2 {len(t2_30)})\n"
-        f"🕐 <b>1h : {len(d60)} vols</b> "
-        f"(🔵T1 {len(t1_60)} / 🟣T2 {len(t2_60)})\n\n"
-        "🛬 <b>Prochains 30 min</b>\n"
+        f"🕒 {maintenant().strftime('%H:%M')} | 🚖 {niveau_affluence(len(d30))} | ⚠️ {len(retards)}\n"
+        f"⏱️ 30min : <b>{len(d30)}</b> (🔵{len(t1_30)} / 🟣{len(t2_30)})\n"
+        f"🕐 1h : <b>{len(d60)}</b> (🔵{len(t1_60)} / 🟣{len(t2_60)})\n\n"
+        "🛬 <b>Prochains 30min</b>\n"
     )
 
-    message += bloc_terminal("🔵 T1", t1_30)
-    message += "\n"
-    message += bloc_terminal("🟣 T2", t2_30)
+    msg += bloc_terminal("🔵 T1", t1_30)
+    msg += bloc_terminal("🟣 T2", t2_30)
 
-    return message.strip()
+    return msg.strip()
 
 
 # =========================
-# ALERTES COMPACTES
+# ALERTES
 # =========================
 
 def initialiser_sans_spam(vols):
@@ -315,11 +343,11 @@ def envoyer_alertes_arrivees(vols):
             continue
 
         message = (
-            "🚨 <b>NOUVELLE ARRIVÉE</b> 🚨\n\n"
-            f"✈️ <b>{v['compagnie']}</b> | {terminal_emoji(v['terminal'])}\n"
+            "🚨 <b>NOUVELLE ARRIVÉE</b> 🚨\n"
+            f"✈️ <b>{v['compagnie']}</b> | {emoji_terminal(v['terminal'])}\n"
             f"🌍 {v['provenance']}\n"
-            f"🕒 Prévu {v['prevu']} → {v['status_fr']} {v['actuel']}\n"
-            f"🚖 30 min : <b>{nb30}</b> vols"
+            f"🕒 {v['prevu']} → {v['status_fr']} {v['actuel']}\n"
+            f"🚖 30min : <b>{nb30}</b> vols"
         )
 
         envoyer_telegram(message)
@@ -338,11 +366,10 @@ def envoyer_alertes_retards(vols):
             continue
 
         message = (
-            "⚠️ <b>RETARD IMPORTANT</b> ⚠️\n\n"
-            f"✈️ <b>{v['compagnie']}</b> | {terminal_emoji(v['terminal'])}\n"
+            "⚠️ <b>RETARD IMPORTANT</b> ⚠️\n"
+            f"✈️ <b>{v['compagnie']}</b> | {emoji_terminal(v['terminal'])}\n"
             f"🌍 {v['provenance']}\n"
-            f"🕒 {v['prevu']} → {v['actuel']} "
-            f"(<b>+{v['retard']} min</b>)"
+            f"🕒 {v['prevu']} → {v['actuel']} (<b>+{v['retard']}min</b>)"
         )
 
         envoyer_telegram(message)
@@ -356,10 +383,7 @@ def envoyer_alertes_retards(vols):
 def boucle_principale():
     global dernier_resume
 
-    envoyer_telegram(
-        "✅ <b>EasyTaxi Flight Alert V6 lancé</b>\n"
-        "AeroDataBox actif | Mode compact | Commandes désactivées."
-    )
+    envoyer_telegram("✅ <b>EasyTaxi Flight Alert V7 lancé</b>\nMode compact définitif.")
 
     try:
         vols = mettre_a_jour_cache_si_besoin(force=True)
