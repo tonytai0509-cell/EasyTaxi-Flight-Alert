@@ -17,7 +17,7 @@ URL_ARRIVEES = "https://www.nice.aeroport.fr/en/flights/arrivals"
 
 FREQUENCE_VERIFICATION_SECONDES = 300      # 5 minutes
 FREQUENCE_RESUME_SECONDES = 1800           # 30 minutes
-RETARD_IMPORTANT_MINUTES = 20              # alerte retard à partir de 20 min
+RETARD_IMPORTANT_MINUTES = 20
 
 PARIS = ZoneInfo("Europe/Paris")
 
@@ -133,9 +133,67 @@ def nettoyer(texte):
     return re.sub(r"\s+", " ", texte or "").strip()
 
 
+def est_heure(texte):
+    return bool(re.fullmatch(r"\d{1,2}:\d{2}", texte or ""))
+
+
+def est_numero_vol(texte):
+    return bool(re.fullmatch(r"[A-Z0-9]{2,3}\s?\d{2,5}[A-Z]?", (texte or "").strip()))
+
+
+def est_terminal(texte):
+    t = (texte or "").strip().upper()
+    return t in ["1", "2", "T1", "T2", "TERMINAL 1", "TERMINAL 2"]
+
+
+def normaliser_terminal(texte):
+    t = (texte or "").strip().upper()
+    if "1" in t:
+        return "1"
+    if "2" in t:
+        return "2"
+    return None
+
+
+def ligne_ressemble_ville(texte):
+    if not texte:
+        return False
+
+    t = texte.strip()
+    tl = t.lower()
+
+    mots_interdits = [
+        "prévu", "prevu", "expected", "arrived", "landing", "approche",
+        "delayed", "retard", "cancelled", "annulé", "terminal",
+        "mis à jour", "updated", "vols", "arrivées", "départs"
+    ]
+
+    if any(m in tl for m in mots_interdits):
+        return False
+    if est_heure(t) or est_numero_vol(t) or est_terminal(t):
+        return False
+    if len(t) < 3:
+        return False
+
+    return True
+
+
+def est_debut_probable_vol(lignes, index):
+    if not est_heure(lignes[index]):
+        return False
+    if index + 1 >= len(lignes):
+        return False
+    return ligne_ressemble_ville(lignes[index + 1])
+
+
+def extraire_derniere_heure(texte):
+    heures = re.findall(r"\b\d{1,2}:\d{2}\b", texte or "")
+    return heures[-1] if heures else None
+
+
 def statut_est_arrive(statut):
     s = statut.lower()
-    mots = ["arrived", "landing", "landed", "atterri", "arrivé"]
+    mots = ["arrived", "landing", "landed", "atterri", "arrivé", "approche"]
     return any(mot in s for mot in mots)
 
 
@@ -146,30 +204,46 @@ def statut_est_retarde(statut):
 
 def traduire_statut(statut):
     s = statut.lower()
-
     heure = extraire_derniere_heure(statut)
 
     if "arrived" in s or "landed" in s:
         return f"Atterri {heure}" if heure else "Atterri"
 
-    if "landing" in s:
+    if "landing" in s or "approche" in s:
         return f"En approche {heure}" if heure else "En approche"
 
-    if "delayed" in s:
+    if "delayed" in s or "retard" in s:
         return f"Retardé {heure}" if heure else "Retardé"
 
-    if "expected" in s:
+    if "expected" in s or "prévu" in s or "prevu" in s:
         return f"Prévu {heure}" if heure else "Prévu"
 
-    if "cancel" in s:
+    if "cancel" in s or "annul" in s:
         return "Annulé"
 
     return statut
 
 
-def extraire_derniere_heure(texte):
-    heures = re.findall(r"\b\d{1,2}:\d{2}\b", texte or "")
-    return heures[-1] if heures else None
+def heure_effective(vol):
+    """
+    Pour le résumé, on utilise l'heure actualisée si elle existe.
+    Exemple : prévu 17:50 mais Expected 19:45 -> on compte à 19:45, pas à 17:50.
+    """
+    statut = vol.get("statut", "")
+    heure_statut = extraire_derniere_heure(statut)
+
+    if heure_statut and (
+        "expected" in statut.lower()
+        or "prévu" in statut.lower()
+        or "prevu" in statut.lower()
+        or "delayed" in statut.lower()
+        or "retard" in statut.lower()
+        or "landing" in statut.lower()
+        or "approche" in statut.lower()
+    ):
+        return heure_statut
+
+    return vol["heure_prevue"]
 
 
 def convertir_heure_du_jour(heure_txt):
@@ -200,7 +274,7 @@ def badge_terminal(terminal):
 # =========================
 
 def recuperer_lignes_page():
-    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/4.0"}
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/4.1"}
     html = requests.get(URL_ARRIVEES, headers=headers, timeout=25).text
     soup = BeautifulSoup(html, "html.parser")
 
@@ -210,50 +284,72 @@ def recuperer_lignes_page():
     return lignes
 
 
+def decouper_blocs_vols(lignes):
+    """
+    Ancienne version : bloc fixe de 25 lignes.
+    Nouvelle version : on coupe de vrai début de vol à vrai début de vol.
+    Cela évite que les horaires du statut, comme "Prévu 19:45", soient pris pour un nouveau vol.
+    """
+    debuts = []
+
+    for i in range(len(lignes)):
+        if est_debut_probable_vol(lignes, i):
+            debuts.append(i)
+
+    blocs = []
+
+    for position, debut in enumerate(debuts):
+        fin = debuts[position + 1] if position + 1 < len(debuts) else min(debut + 40, len(lignes))
+        blocs.append(lignes[debut:fin])
+
+    return blocs
+
+
 def extraire_vols_depuis_lignes(lignes):
     vols = []
+    blocs = decouper_blocs_vols(lignes)
 
-    for i, ligne in enumerate(lignes):
-        if not re.fullmatch(r"\d{1,2}:\d{2}", ligne):
-            continue
+    mots_statut = [
+        "Arrived", "Expected", "Delayed", "Landing", "Cancelled", "On time",
+        "Prévu", "Prevü", "Prevu", "Approche", "Retard", "Annulé"
+    ]
 
-        bloc = lignes[i:i+25]
-        if len(bloc) < 5:
+    for bloc in blocs:
+        if len(bloc) < 3:
             continue
 
         heure_prevue = bloc[0]
-        ville = bloc[1] if len(bloc) > 1 else "Inconnue"
+        ville = bloc[1]
 
         terminal = None
         for x in bloc:
-            if x in ["1", "2"]:
-                terminal = x
+            if est_terminal(x):
+                terminal = normaliser_terminal(x)
                 break
 
         numeros = []
         for x in bloc:
-            if re.fullmatch(r"[A-Z0-9]{2,3}\s?\d{2,5}[A-Z]?", x):
+            if est_numero_vol(x):
                 numeros.append(x.replace(" ", ""))
 
         numero_vol = numeros[0] if numeros else "N/A"
 
         statut = ""
-        mots_statut = ["Arrived", "Expected", "Delayed", "Landing", "Cancelled", "On time"]
         for x in bloc:
-            if any(mot.lower() in x.lower() for mot in mots_statut):
+            xl = x.lower()
+            if any(mot.lower() in xl for mot in mots_statut):
                 statut = x
                 break
 
+        if not statut:
+            statut = "Prévu"
+
         compagnie = "N/A"
-        elements_interdits = set([heure_prevue, ville, terminal or "", numero_vol])
+        elements_interdits = set([heure_prevue, ville, terminal or "", f"T{terminal}" if terminal else "", numero_vol])
         for x in bloc[2:]:
             if x in elements_interdits:
                 continue
-            if x in ["1", "2"]:
-                continue
-            if re.fullmatch(r"\d{1,2}:\d{2}", x):
-                continue
-            if re.fullmatch(r"[A-Z0-9]{2,3}\s?\d{2,5}[A-Z]?", x):
+            if est_terminal(x) or est_heure(x) or est_numero_vol(x):
                 continue
             if any(mot.lower() in x.lower() for mot in mots_statut):
                 continue
@@ -263,7 +359,7 @@ def extraire_vols_depuis_lignes(lignes):
 
         heure_reelle = extraire_derniere_heure(statut)
 
-        if terminal in ["1", "2"] and statut:
+        if terminal in ["1", "2"]:
             vols.append({
                 "heure_prevue": heure_prevue,
                 "heure_reelle": heure_reelle,
@@ -277,7 +373,7 @@ def extraire_vols_depuis_lignes(lignes):
 
     uniques = {}
     for vol in vols:
-        cle = f"{vol['numero_vol']}-{vol['heure_prevue']}-{vol['terminal']}"
+        cle = f"{vol['numero_vol']}-{vol['heure_prevue']}-{vol['terminal']}-{vol['ville']}"
         uniques[cle] = vol
 
     return list(uniques.values())
@@ -299,12 +395,13 @@ def vols_dans_delai(vols, minutes):
     resultats = []
     for vol in vols:
         try:
-            heure_vol = convertir_heure_du_jour(vol["heure_prevue"])
+            heure_vol = convertir_heure_du_jour(heure_effective(vol))
             if now <= heure_vol <= limite:
                 resultats.append(vol)
         except Exception:
             pass
 
+    resultats.sort(key=lambda v: heure_effective(v))
     return resultats
 
 
@@ -360,9 +457,10 @@ def creer_resume(vols):
 
     if dans_30:
         message += "🛬 <b>Prochains vols :</b>\n"
-        for vol in dans_30[:10]:
+        for vol in dans_30[:12]:
+            eff = heure_effective(vol)
             message += (
-                f"• {vol['heure_prevue']} - {vol['ville']} - "
+                f"• {eff} - {vol['ville']} - "
                 f"{vol['compagnie']} - {badge_terminal(vol['terminal'])} - {vol['statut_fr']}\n"
             )
     else:
@@ -376,11 +474,11 @@ def creer_resume(vols):
 # =========================
 
 def cle_vol(vol):
-    return f"{vol['numero_vol']}-{vol['heure_prevue']}-{vol['terminal']}"
+    return f"{vol['numero_vol']}-{vol['heure_prevue']}-{vol['terminal']}-{vol['ville']}"
 
 
 def cle_retard(vol):
-    return f"{vol['numero_vol']}-{vol['heure_prevue']}-{vol.get('heure_reelle')}-{vol['terminal']}"
+    return f"{vol['numero_vol']}-{vol['heure_prevue']}-{vol.get('heure_reelle')}-{vol['terminal']}-{vol['ville']}"
 
 
 def initialiser_sans_spam(vols):
@@ -449,8 +547,8 @@ def boucle_principale():
     ignorer_anciennes_commandes()
 
     envoyer_telegram(
-        "✅ <b>EasyTaxi Flight Alert V4 lancé</b>\n"
-        "Arrivées + retards importants activés.\n\n"
+        "✅ <b>EasyTaxi Flight Alert V4.1 lancé</b>\n"
+        "Lecture des vols améliorée + retards activés.\n\n"
         "Commande disponible : /test"
     )
 
