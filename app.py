@@ -1,7 +1,7 @@
 import requests
 
-TOKEN = "8729024731:AAFsaKxKc_8bgxwvno2PqJ-c_ZcEqRovPHs
-"
+TOKEN = "8729024731:AAFsaKxKc_8bgxwvno2PqJ-c_ZcEqRovPHs"
+
 CHAT_ID = "-1004321946575"
 
 def envoyer_message(message):
