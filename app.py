@@ -17,9 +17,8 @@ RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "aerodatabox.p.rapidapi.com")
 AEROPORT_IATA = "NCE"
 PARIS = ZoneInfo("Europe/Paris")
 
-# Quota : 1 appel toutes les 15 min.
-FREQUENCE_API_SECONDES = 900
-FREQUENCE_RESUME_SECONDES = 1800
+FREQUENCE_API_SECONDES = 900       # 15 minutes
+FREQUENCE_RESUME_SECONDES = 1800   # 30 minutes
 RETARD_IMPORTANT_MINUTES = 20
 
 vols_cache = []
@@ -63,24 +62,6 @@ def emoji_terminal(terminal):
     return "⚪T?"
 
 
-def statut_fr(status):
-    s = (status or "").lower()
-    if "arriv" in s or "landed" in s:
-        return "Atterri"
-    if "approach" in s or "landing" in s:
-        return "Approche"
-    if "delay" in s:
-        return "Retardé"
-    if "cancel" in s:
-        return "Annulé"
-    return "Prévu"
-
-
-def est_arrive_ou_approche(status):
-    s = (status or "").lower()
-    return "arriv" in s or "landed" in s or "approach" in s or "landing" in s
-
-
 def nettoyer_nom(nom):
     nom = (nom or "").upper().strip()
     remplacements = {
@@ -91,6 +72,8 @@ def nettoyer_nom(nom):
         "PARIS ORLY": "PARIS ORLY",
         "LONDON": "LONDRES",
         "WARSAW": "VARSOVIE",
+        "GENEVA": "GENÈVE",
+        "COPENHAGEN": "COPENHAGUE",
     }
     return remplacements.get(nom, nom)
 
@@ -103,8 +86,60 @@ def nettoyer_compagnie(nom):
         "TRANSAVIA FRANCE": "TRANSAVIA",
         "BRITISH AIRWAYS": "BRITISH",
         "ROYAL AIR MAROC": "RAM",
+        "SCANDINAVIAN AIRLINES": "SAS",
+        "EASYJET EUROPE": "EASYJET",
     }
     return remplacements.get(nom, nom)
+
+
+def est_arrive_ou_approche(status):
+    s = (status or "").lower()
+    return (
+        "arriv" in s
+        or "landed" in s
+        or "approach" in s
+        or "landing" in s
+        or "final" in s
+    )
+
+
+def est_arrive(status):
+    s = (status or "").lower()
+    return "arriv" in s or "landed" in s
+
+
+def est_approche(status):
+    s = (status or "").lower()
+    return "approach" in s or "landing" in s or "final" in s
+
+
+def statut_lisible(v):
+    status = (v.get("status") or "").lower()
+    retard = v.get("retard", 0)
+
+    if est_arrive(status):
+        return f"🛬 Posé {v['actuel']}"
+
+    if est_approche(status):
+        return "✈️ Approche"
+
+    if "cancel" in status:
+        return "❌ Annulé"
+
+    if "delay" in status or retard >= RETARD_IMPORTANT_MINUTES:
+        return f"⏱️ +{retard}min"
+
+    if retard >= 10:
+        return f"⏱️ +{retard}min"
+
+    return "🟢 Prévu"
+
+
+def heure_lisible(v):
+    # Si l’heure réelle/estimée a changé, on affiche prévu -> actuel.
+    if v["prevu"] != "N/A" and v["actuel"] != "N/A" and v["prevu"] != v["actuel"]:
+        return f"{v['prevu']}→{v['actuel']}"
+    return v["actuel"] if v["actuel"] != "N/A" else v["prevu"]
 
 
 def cle_arrivee(v):
@@ -194,14 +229,13 @@ def recuperer_arrivees_aerodatabox():
         predicted = arrival.get("predictedTime", {}) or {}
 
         dt_prevu = parse_iso(scheduled.get("local"))
-        dt_actuel = (
-            parse_iso(actual.get("local"))
-            or parse_iso(revised.get("local"))
-            or parse_iso(predicted.get("local"))
-            or dt_prevu
-        )
+        dt_revise = parse_iso(revised.get("local"))
+        dt_actual = parse_iso(actual.get("local"))
+        dt_predict = parse_iso(predicted.get("local"))
 
-        status = item.get("status") or "Expected"
+        dt_actuel = dt_actual or dt_revise or dt_predict or dt_prevu
+
+        status = item.get("status") or arrival.get("status") or "Expected"
         terminal = str(arrival.get("terminal") or "")
 
         retard = 0
@@ -214,7 +248,6 @@ def recuperer_arrivees_aerodatabox():
             "provenance": provenance,
             "terminal": terminal,
             "status": status,
-            "status_fr": statut_fr(status),
             "dt_prevu": dt_prevu,
             "dt_actuel": dt_actuel,
             "prevu": hhmm(dt_prevu),
@@ -222,14 +255,13 @@ def recuperer_arrivees_aerodatabox():
             "retard": retard,
         })
 
-    # Supprime les doublons de codeshare : même ville, même heure, même terminal.
+    # Suppression doublons codeshare : même ville, même heure actuelle, même terminal.
     uniques = {}
     for v in vols:
         cle = f"{v['actuel']}-{v['provenance']}-{v['terminal']}"
         if cle not in uniques:
             uniques[cle] = v
         else:
-            # on garde le nom de compagnie le plus court/clair
             if len(v["compagnie"]) < len(uniques[cle]["compagnie"]):
                 uniques[cle] = v
 
@@ -252,7 +284,7 @@ def mettre_a_jour_cache_si_besoin(force=False):
 
 
 # =========================
-# RÉSUMÉ UNIQUE ET COMPACT
+# RÉSUMÉ
 # =========================
 
 def vols_dans_minutes(vols, minutes):
@@ -273,10 +305,7 @@ def niveau_affluence(nb30):
 
 
 def ligne_vol(v):
-    statut = v["status_fr"]
-    if v["retard"] >= RETARD_IMPORTANT_MINUTES and not est_arrive_ou_approche(v["status"]):
-        statut = f"+{v['retard']}min"
-    return f"• {v['actuel']} {v['provenance']} - {v['compagnie']} - {statut}"
+    return f"• {heure_lisible(v)} {v['provenance']} - {v['compagnie']} - {statut_lisible(v)}"
 
 
 def bloc_terminal(titre, vols):
@@ -344,7 +373,7 @@ def envoyer_alertes_arrivees(vols):
             "🚨 <b>NOUVELLE ARRIVÉE</b> 🚨\n"
             f"✈️ <b>{v['compagnie']}</b> | {emoji_terminal(v['terminal'])}\n"
             f"🌍 {v['provenance']}\n"
-            f"🕒 {v['prevu']} → {v['status_fr']} {v['actuel']}\n"
+            f"🕒 {heure_lisible(v)} | {statut_lisible(v)}\n"
             f"🚖 30min : <b>{nb30}</b> vols"
         )
 
@@ -367,7 +396,7 @@ def envoyer_alertes_retards(vols):
             "⚠️ <b>RETARD IMPORTANT</b> ⚠️\n"
             f"✈️ <b>{v['compagnie']}</b> | {emoji_terminal(v['terminal'])}\n"
             f"🌍 {v['provenance']}\n"
-            f"🕒 {v['prevu']} → {v['actuel']} (<b>+{v['retard']}min</b>)"
+            f"🕒 {heure_lisible(v)} (<b>+{v['retard']}min</b>)"
         )
 
         envoyer_telegram(message)
@@ -381,7 +410,7 @@ def envoyer_alertes_retards(vols):
 def boucle_principale():
     global dernier_resume
 
-    envoyer_telegram("✅ <b>EasyTaxi Flight Alert V7 lancé</b>\nMode compact définitif.")
+    envoyer_telegram("✅ <b>EasyTaxi Flight Alert V8 lancé</b>\nStatuts plus précis : Approche / Posé / Retard.")
 
     try:
         vols = mettre_a_jour_cache_si_besoin(force=True)
