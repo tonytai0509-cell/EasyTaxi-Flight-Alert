@@ -61,7 +61,26 @@ quota_alerte_envoyee = False
 FREQUENCE_RESUME_SECONDES = 1800
 RETARD_IMPORTANT_MINUTES = 20
 
-# ---- Historique (SQLite léger, local) ----
+# ---- SNCF / TGV (API officielle gratuite, quota très généreux : 150k/mois) ----
+SNCF_API_TOKEN = os.getenv("SNCF_API_TOKEN")
+SNCF_GARE_NOM = os.getenv("SNCF_GARE_NOM", "Nice Ville")
+SNCF_STOP_AREA_ID = os.getenv("SNCF_STOP_AREA_ID") # optionnel : évite une résolution auto si déjà connu
+SNCF_INCLURE_OUIGO = os.getenv("SNCF_INCLURE_OUIGO", "true").lower() == "true"
+FREQUENCE_SNCF_SECONDES = int(os.getenv("FREQUENCE_SNCF_SECONDES", "180")) # 3 min, large quota donc pas besoin d'économiser
+RETARD_TRAIN_IMPORTANT_MINUTES = int(os.getenv("RETARD_TRAIN_IMPORTANT_MINUTES", "15"))
+APPROCHE_TRAIN_MINUTES = int(os.getenv("APPROCHE_TRAIN_MINUTES", "10"))
+
+trains_cache = []
+derniere_maj_trains = None
+_stop_area_id_resolu = None
+origine_cache = {} # vehicle_journey_id -> {"origine": str, "time": datetime}
+
+trains_approche_annonces = set()
+trains_arrives_annonces = set()
+trains_annules_annonces = set()
+trains_retard_annonces = {}
+
+
 DB_FICHIER = os.getenv("DB_FICHIER", "historique_vols.db")
 
 # ---- Commandes Telegram (polling gratuit, données cache uniquement) ----
@@ -651,6 +670,229 @@ def mettre_a_jour_cache_si_besoin(force=False):
 
 
 # =========================
+# SNCF / TGV — Gare de Nice-Ville
+# API officielle gratuite (Navitia), quota très généreux (150k/mois).
+# Doc : https://www.digital.sncf.com/startup/api
+# =========================
+
+def resoudre_gare_sncf():
+    """Retourne l'identifiant stop_area de la gare. Utilise SNCF_STOP_AREA_ID s'il est fourni,
+    sinon retombe sur l'ID officiel de Nice-Ville (testé et validé)."""
+    global _stop_area_id_resolu
+    if _stop_area_id_resolu:
+        return _stop_area_id_resolu
+    _stop_area_id_resolu = SNCF_STOP_AREA_ID or "stop_area:SNCF:87756056" # Nice-Ville, code UIC 87756056
+    return _stop_area_id_resolu
+
+
+def est_tgv(commercial_mode):
+    cm = (commercial_mode or "").upper()
+    if "OUIGO" in cm:
+        return SNCF_INCLURE_OUIGO
+    return "TGV" in cm
+
+
+def parse_datetime_sncf(value):
+    """Format Navitia : '20260703T211300' (heure locale, sans timezone explicite)."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=PARIS)
+    except Exception:
+        return None
+
+
+def recuperer_origine_reelle(vehicle_journey_id):
+    """Interroge le détail du voyage pour trouver la vraie ville d'origine
+    (le champ 'direction' des arrivals ne donne que le terminus de la ligne).
+    Résultat mis en cache car l'origine d'un même trajet ne change pas dans la journée."""
+    cached = origine_cache.get(vehicle_journey_id)
+    if cached and (maintenant() - cached["time"]).total_seconds() < 6 * 3600:
+        return cached["origine"]
+
+    try:
+        url = f"https://api.sncf.com/v1/coverage/sncf/vehicle_journeys/{vehicle_journey_id}"
+        r = requests.get(url, auth=(SNCF_API_TOKEN, ""), timeout=15)
+        r.raise_for_status()
+        vj_list = r.json().get("vehicle_journeys", [])
+        if not vj_list:
+            return "N/A"
+        stop_times = vj_list[0].get("stop_times", [])
+        if not stop_times:
+            return "N/A"
+        origine = stop_times[0].get("stop_point", {}).get("name", "N/A")
+        origine_cache[vehicle_journey_id] = {"origine": origine, "time": maintenant()}
+        return origine
+    except Exception as e:
+        logger.warning(f"Erreur récupération origine SNCF: {e}")
+        return "N/A"
+
+
+def recuperer_arrivees_sncf():
+    stop_id = resoudre_gare_sncf()
+    url = f"https://api.sncf.com/v1/coverage/sncf/stop_areas/{stop_id}/arrivals"
+    params = {"count": 30, "duration": 7200} # fenêtre de 2h
+    r = requests.get(url, params=params, auth=(SNCF_API_TOKEN, ""), timeout=20)
+    r.raise_for_status()
+    data = r.json()
+
+    trains = []
+    for item in data.get("arrivals", []):
+        infos = item.get("display_informations", {}) or {}
+        stop_dt = item.get("stop_date_time", {}) or {}
+
+        commercial_mode = infos.get("commercial_mode", "")
+        if not est_tgv(commercial_mode):
+            continue
+
+        dt_prevu = parse_datetime_sncf(stop_dt.get("base_arrival_date_time"))
+        dt_actuel = parse_datetime_sncf(stop_dt.get("arrival_date_time")) or dt_prevu
+
+        retard = 0
+        if dt_prevu and dt_actuel:
+            retard = max(0, int((dt_actuel - dt_prevu).total_seconds() // 60))
+
+        annule = str(item.get("status", "")).lower() in ("deleted", "delete")
+
+        vehicle_journey_id = None
+        for link in item.get("links", []):
+            if link.get("type") == "vehicle_journey":
+                vehicle_journey_id = link.get("id")
+                break
+
+        provenance = "N/A"
+        if vehicle_journey_id:
+            provenance = recuperer_origine_reelle(vehicle_journey_id)
+
+        trains.append({
+            "numero": infos.get("headsign", "N/A"),
+            "provenance": nettoyer_nom(provenance),
+            "type": commercial_mode,
+            "voie": ((item.get("stop_point") or {}).get("name") or ""),
+            "dt_prevu": dt_prevu,
+            "dt_actuel": dt_actuel,
+            "prevu": hhmm(dt_prevu),
+            "actuel": hhmm(dt_actuel),
+            "retard": retard,
+            "annule": annule,
+        })
+
+    trains.sort(key=lambda t: t.get("dt_actuel") or t.get("dt_prevu") or maintenant())
+    return trains
+
+
+def mettre_a_jour_cache_trains_si_besoin(force=False):
+    global trains_cache, derniere_maj_trains
+
+    if not SNCF_API_TOKEN:
+        return trains_cache # module désactivé tant qu'aucun token n'est fourni
+
+    if not force and derniere_maj_trains is not None and (maintenant() - derniere_maj_trains).total_seconds() < FREQUENCE_SNCF_SECONDES:
+        return trains_cache
+
+    try:
+        trains_cache = recuperer_arrivees_sncf()
+        derniere_maj_trains = maintenant()
+    except Exception as e:
+        logger.warning(f"Erreur API SNCF: {e}")
+
+    return trains_cache
+
+
+def cle_train(t):
+    return f"{t.get('numero')}-{t.get('prevu')}"
+
+
+def statut_train(t):
+    if t.get("annule"):
+        return "annule"
+    now = maintenant()
+    dt = t.get("dt_actuel")
+    if dt and now >= dt:
+        return "arrive"
+    if dt and (dt - now).total_seconds() <= APPROCHE_TRAIN_MINUTES * 60:
+        return "approche"
+    if t.get("retard", 0) >= RETARD_TRAIN_IMPORTANT_MINUTES:
+        return "retard"
+    return "prevu"
+
+
+def icone_train(t):
+    s = statut_train(t)
+    if s == "annule":
+        return "❌"
+    if s == "arrive":
+        return "✅"
+    if s == "approche":
+        return "🚄"
+    if s == "retard":
+        return f"⏰+{t['retard']}"
+    return "🟢"
+
+
+def heure_lisible_train(t):
+    if t["prevu"] != "N/A" and t["actuel"] != "N/A" and t["prevu"] != t["actuel"]:
+        return f"{t['prevu']}→{t['actuel']}"
+    return t["actuel"] if t["actuel"] != "N/A" else t["prevu"]
+
+
+def ligne_train(t):
+    heure = heure_lisible_train(t)
+    provenance = html.escape((t.get("provenance") or "")[:15])
+    voie = html.escape((t.get("voie") or "")[:6])
+    return f"{heure:<12} {provenance:<16} {voie:<7} {icone_train(t)}"
+
+
+def trains_dans_minutes(trains, minutes):
+    now = maintenant()
+    limite = now + timedelta(minutes=minutes)
+    return [t for t in trains if t.get("dt_actuel") and now <= t["dt_actuel"] <= limite]
+
+
+def envoyer_alertes_trains(trains):
+    for t in trains:
+        cle = cle_train(t)
+        statut = statut_train(t)
+
+        if statut == "annule" and cle not in trains_annules_annonces:
+            envoyer_telegram(
+                "❌ <b>TGV ANNULÉ</b>\n\n"
+                f"🚄 Train {t['numero']}\n"
+                f"🕒 Prévu {t['prevu']}"
+            )
+            trains_annules_annonces.add(cle)
+            continue
+
+        if statut == "approche" and cle not in trains_approche_annonces:
+            envoyer_telegram(
+                "🚄 <b>TGV EN APPROCHE</b>\n\n"
+                f"Train {t['numero']} ({t.get('type', 'TGV')})\n"
+                f"🕒 {heure_lisible_train(t)}"
+                + (f"\n📍 Voie {t['voie']}" if t.get("voie") else "")
+            )
+            trains_approche_annonces.add(cle)
+
+        if statut == "arrive" and cle not in trains_arrives_annonces:
+            envoyer_telegram(
+                "✅ <b>TGV ARRIVÉ</b>\n\n"
+                f"Train {t['numero']} ({t.get('type', 'TGV')})\n"
+                f"🕒 {t['actuel']}"
+                + (f"\n📍 Voie {t['voie']}" if t.get("voie") else "")
+            )
+            trains_arrives_annonces.add(cle)
+
+        if t.get("retard", 0) >= RETARD_TRAIN_IMPORTANT_MINUTES and statut not in ("arrive", "annule"):
+            ancien = trains_retard_annonces.get(cle)
+            if ancien is None or t["retard"] >= ancien + 10:
+                envoyer_telegram(
+                    "⏰ <b>RETARD TGV</b>\n\n"
+                    f"Train {t['numero']}\n"
+                    f"🕒 {heure_lisible_train(t)} (<b>+{t['retard']}min</b>)"
+                )
+                trains_retard_annonces[cle] = t["retard"]
+
+
+# =========================
 # LIVE STATUS API PRIORITAIRE
 # =========================
 
@@ -751,6 +993,16 @@ def nettoyer_caches_si_besoin():
     retards_deja_annonces.clear()
     annules_deja_annonces.clear()
 
+    trains_approche_annonces.clear()
+    trains_arrives_annonces.clear()
+    trains_annules_annonces.clear()
+    trains_retard_annonces.clear()
+
+    expiration_origine = maintenant() - timedelta(hours=6)
+    obsoletes_origine = [k for k, v in origine_cache.items() if v["time"] < expiration_origine]
+    for k in obsoletes_origine:
+        del origine_cache[k]
+
     expiration = maintenant() - timedelta(hours=6)
     obsoletes = [k for k, v in live_status_cache.items() if v["time"] < expiration]
     for k in obsoletes:
@@ -800,7 +1052,14 @@ def bloc_terminal(titre, vols):
     return f"{lignes[0]}\n<code>{corps}</code>\n"
 
 
-def creer_resume(vols):
+def bloc_trains(trains):
+    if not trains:
+        return ""
+    corps = "\n".join(ligne_train(t) for t in trains[:8])
+    return f"\n🚄 <b>Prochains TGV (30min)</b> : {len(trains)}\n<code>{corps}</code>\n"
+
+
+def creer_resume(vols, trains=None):
     d30 = vols_dans_minutes(vols, 30)
     d60 = vols_dans_minutes(vols, 60)
     t1_30 = [v for v in d30 if v["terminal"] == "1"]
@@ -822,7 +1081,12 @@ def creer_resume(vols):
     )
     msg += bloc_terminal("🔵 T1", t1_30)
     msg += bloc_terminal("🟣 T2", t2_30)
-    msg += f"\n🔌 API : {quota_utilise()}/{QUOTA_API_MENSUEL} ce mois-ci"
+
+    if trains:
+        trains_30 = trains_dans_minutes(trains, 30)
+        msg += bloc_trains(trains_30)
+
+    msg += f"\n🔌 API vols : {quota_utilise()}/{QUOTA_API_MENSUEL} ce mois-ci"
     return msg.strip()
 
 
@@ -836,6 +1100,20 @@ def initialiser_sans_spam(vols):
             poses_deja_annonces.add(cle)
         if v["retard"] >= RETARD_IMPORTANT_MINUTES:
             retards_deja_annonces[cle] = v["retard"]
+
+
+def initialiser_sans_spam_trains(trains):
+    for t in trains:
+        cle = cle_train(t)
+        statut = statut_train(t)
+        if statut == "approche":
+            trains_approche_annonces.add(cle)
+        if statut == "arrive":
+            trains_arrives_annonces.add(cle)
+        if statut == "annule":
+            trains_annules_annonces.add(cle)
+        if t.get("retard", 0) >= RETARD_TRAIN_IMPORTANT_MINUTES:
+            trains_retard_annonces[cle] = t["retard"]
 
 
 def init_db():
@@ -1013,6 +1291,16 @@ def commande_quota():
     return f"🔌 Quota API : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés, {quota_restant()} restants ce mois-ci."
 
 
+def commande_tgv(trains):
+    if not SNCF_API_TOKEN:
+        return "🚄 Module TGV pas encore activé (token SNCF manquant)."
+    filtres = trains_dans_minutes(trains, 60)
+    if not filtres:
+        return "Aucun TGV prévu à Nice-Ville dans l'heure (données cache)."
+    corps = "\n".join(ligne_train(t) for t in filtres[:10])
+    return f"🚄 <b>TGV Nice-Ville</b> (1h)\n<code>{corps}</code>"
+
+
 def commande_aide():
     return (
         "📋 <b>Commandes disponibles</b>\n"
@@ -1020,14 +1308,16 @@ def commande_aide():
         "/t1 — vols Terminal 1 (1h)\n"
         "/t2 — vols Terminal 2 (1h)\n"
         "/vol NUMERO — chercher un vol précis\n"
+        "/tgv — prochains TGV à Nice-Ville (1h)\n"
         "/quota — quota API restant\n\n"
         "<i>Toutes ces commandes utilisent uniquement les données déjà en cache "
-        "(site aéroport gratuit) — aucun appel API supplémentaire n'est déclenché.</i>"
+        "(sources gratuites) — aucun appel API supplémentaire n'est déclenché.</i>"
     )
 
 
-def traiter_commandes(vols):
+def traiter_commandes(vols, trains=None):
     global dernier_update_id
+    trains = trains or []
     updates = recuperer_updates_telegram()
     for u in updates:
         dernier_update_id = u["update_id"]
@@ -1049,6 +1339,8 @@ def traiter_commandes(vols):
             repondre_telegram(chat_id, commande_terminal(vols, "2"))
         elif commande in ("/vol", "/flight") and len(partie) > 1:
             repondre_telegram(chat_id, commande_vol(vols, partie[1]))
+        elif commande == "/tgv":
+            repondre_telegram(chat_id, commande_tgv(trains))
         elif commande == "/quota":
             repondre_telegram(chat_id, commande_quota())
         elif commande in ("/aide", "/help", "/start"):
@@ -1080,23 +1372,32 @@ def envoyer_resume_matin_si_besoin(vols):
 def boucle_principale():
     global dernier_resume
     init_db()
-    envoyer_telegram(
-        "✅ <b>EasyTaxi Flight Alert V14 lancé</b>\n"
+    message_demarrage = (
+        "✅ <b>EasyTaxi Flight Alert V15 lancé</b>\n"
         "Site aéroport gratuit + API AeroDataBox (quota géré) + commandes /aide.\n"
-        f"🔌 Quota API : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés ce mois-ci "
+        f"🔌 Quota API vols : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés ce mois-ci "
         f"({quota_restant()} restants, ~{budget_journalier_calls()}/jour)."
     )
+    if SNCF_API_TOKEN:
+        message_demarrage += f"\n🚄 Module TGV activé (gare : {SNCF_GARE_NOM})."
+    else:
+        message_demarrage += "\n🚄 Module TGV désactivé (SNCF_API_TOKEN manquant)."
+    envoyer_telegram(message_demarrage)
 
     try:
         vols = mettre_a_jour_cache_si_besoin(force=True)
         vols = enrichir_live_status(vols)
         initialiser_sans_spam(vols)
-        envoyer_telegram(creer_resume(vols))
+
+        trains = mettre_a_jour_cache_trains_si_besoin(force=True)
+        initialiser_sans_spam_trains(trains)
+
+        envoyer_telegram(creer_resume(vols, trains))
         dernier_resume = maintenant()
     except Exception as e:
         logger.error(f"Erreur démarrage: {e}")
         envoyer_telegram(f"⚠️ Erreur démarrage : {e}")
-        vols = []
+        vols, trains = [], []
 
     while True:
         try:
@@ -1106,13 +1407,16 @@ def boucle_principale():
             vols = enrichir_live_status(vols)
             envoyer_alertes(vols)
 
-            # Commandes Telegram : API Telegram uniquement, jamais RapidAPI
-            traiter_commandes(vols)
+            trains = mettre_a_jour_cache_trains_si_besoin(force=False)
+            envoyer_alertes_trains(trains)
+
+            # Commandes Telegram : API Telegram uniquement, jamais RapidAPI ni SNCF
+            traiter_commandes(vols, trains)
 
             envoyer_resume_matin_si_besoin(vols)
 
             if dernier_resume is None or (maintenant() - dernier_resume).total_seconds() >= FREQUENCE_RESUME_SECONDES:
-                envoyer_telegram(creer_resume(vols))
+                envoyer_telegram(creer_resume(vols, trains))
                 dernier_resume = maintenant()
 
         except Exception as e:
