@@ -48,15 +48,15 @@ URL_SITE_AEROPORT = "https://www.nice.aeroport.fr/en/flights/arrivals"
 FREQUENCE_SITE_SECONDES = 60
 
 # API AeroDataBox = payante et quotée, on vérifie moins souvent et seulement les vols prioritaires
-FREQUENCE_API_LISTE_SECONDES = int(os.getenv("FREQUENCE_API_LISTE_SECONDES", "1800")) # 30 min par défaut
+FREQUENCE_API_LISTE_SECONDES = int(os.getenv("FREQUENCE_API_LISTE_SECONDES", "1800"))  # 30 min par défaut
 MAX_LIVE_CALLS_PAR_CYCLE = int(os.getenv("MAX_LIVE_CALLS_PAR_CYCLE", "2"))
 FENETRE_LIVE_MINUTES = int(os.getenv("FENETRE_LIVE_MINUTES", "35"))
 
 # ---- Quota API mensuel (garde-fou dur, indépendant des fréquences ci-dessus) ----
 QUOTA_API_MENSUEL = int(os.getenv("QUOTA_API_MENSUEL", "5800"))
-QUOTA_MARGE_SECURITE = int(os.getenv("QUOTA_MARGE_SECURITE", "150")) # on s'arrête avant la vraie limite
+QUOTA_MARGE_SECURITE = int(os.getenv("QUOTA_MARGE_SECURITE", "150"))  # on s'arrête avant la vraie limite
 QUOTA_FICHIER = os.getenv("QUOTA_FICHIER", "quota_api.json")
-QUOTA_SEUIL_ALERTE = 0.9 # avertir Telegram quand 90% du quota est consommé
+QUOTA_SEUIL_ALERTE = 0.9  # avertir Telegram quand 90% du quota est consommé
 quota_alerte_envoyee = False
 
 FREQUENCE_RESUME_SECONDES = 1800
@@ -65,16 +65,16 @@ RETARD_IMPORTANT_MINUTES = 20
 # ---- SNCF / TGV (API officielle gratuite, quota très généreux : 150k/mois) ----
 SNCF_API_TOKEN = os.getenv("SNCF_API_TOKEN")
 SNCF_GARE_NOM = os.getenv("SNCF_GARE_NOM", "Nice Ville")
-SNCF_STOP_AREA_ID = os.getenv("SNCF_STOP_AREA_ID") # optionnel : évite une résolution auto si déjà connu
+SNCF_STOP_AREA_ID = os.getenv("SNCF_STOP_AREA_ID")  # optionnel : évite une résolution auto si déjà connu
 SNCF_INCLURE_OUIGO = os.getenv("SNCF_INCLURE_OUIGO", "true").lower() == "true"
-FREQUENCE_SNCF_SECONDES = int(os.getenv("FREQUENCE_SNCF_SECONDES", "180")) # 3 min, large quota donc pas besoin d'économiser
+FREQUENCE_SNCF_SECONDES = int(os.getenv("FREQUENCE_SNCF_SECONDES", "180"))  # 3 min, large quota donc pas besoin d'économiser
 RETARD_TRAIN_IMPORTANT_MINUTES = int(os.getenv("RETARD_TRAIN_IMPORTANT_MINUTES", "15"))
 APPROCHE_TRAIN_MINUTES = int(os.getenv("APPROCHE_TRAIN_MINUTES", "10"))
 
 trains_cache = []
 derniere_maj_trains = None
 _stop_area_id_resolu = None
-origine_cache = {} # vehicle_journey_id -> {"origine": str, "time": datetime}
+origine_cache = {}  # vehicle_journey_id -> {"origine": str, "time": datetime}
 
 trains_approche_annonces = set()
 trains_arrives_annonces = set()
@@ -273,7 +273,7 @@ def envoyer_telegram(message):
                 "text": message,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
-                "reply_markup": json.dumps(PERSISTENT_KEYBOARD), # re-rattache le bouton fixe à chaque envoi
+                "reply_markup": json.dumps(PERSISTENT_KEYBOARD),  # re-rattache le bouton fixe à chaque envoi
             },
             timeout=20,
         )
@@ -655,7 +655,7 @@ def _verifier_watchdog_site(vols_site):
     if len(vols_site) == 0:
         echecs_site_consecutifs += 1
         if _en_heures_creuses():
-            return # 0 vol la nuit = normal, pas un signe de bug
+            return  # 0 vol la nuit = normal, pas un signe de bug
         logger.warning(f"Scraping site: 0 vol trouvé ({echecs_site_consecutifs}/{WATCHDOG_SEUIL_ECHECS})")
         if echecs_site_consecutifs >= WATCHDOG_SEUIL_ECHECS and not alerte_watchdog_envoyee:
             envoyer_telegram(
@@ -717,7 +717,7 @@ def resoudre_gare_sncf():
     global _stop_area_id_resolu
     if _stop_area_id_resolu:
         return _stop_area_id_resolu
-    _stop_area_id_resolu = SNCF_STOP_AREA_ID or "stop_area:SNCF:87756056" # Nice-Ville, code UIC 87756056
+    _stop_area_id_resolu = SNCF_STOP_AREA_ID or "stop_area:SNCF:87756056"  # Nice-Ville, code UIC 87756056
     return _stop_area_id_resolu
 
 
@@ -767,7 +767,7 @@ def recuperer_origine_reelle(vehicle_journey_id):
 def recuperer_arrivees_sncf():
     stop_id = resoudre_gare_sncf()
     url = f"https://api.sncf.com/v1/coverage/sncf/stop_areas/{stop_id}/arrivals"
-    params = {"count": 30, "duration": 7200} # fenêtre de 2h
+    params = {"count": 30, "duration": 7200}  # fenêtre de 2h
     r = requests.get(url, params=params, auth=(SNCF_API_TOKEN, ""), timeout=20)
     r.raise_for_status()
     data = r.json()
@@ -821,7 +821,7 @@ def mettre_a_jour_cache_trains_si_besoin(force=False):
     global trains_cache, derniere_maj_trains
 
     if not SNCF_API_TOKEN:
-        return trains_cache # module désactivé tant qu'aucun token n'est fourni
+        return trains_cache  # module désactivé tant qu'aucun token n'est fourni
 
     if not force and derniere_maj_trains is not None and (maintenant() - derniere_maj_trains).total_seconds() < FREQUENCE_SNCF_SECONDES:
         return trains_cache
@@ -1259,7 +1259,7 @@ def envoyer_alertes(vols):
 
 def recuperer_updates_telegram():
     global dernier_update_id
-    params = {"timeout": 20} # long-polling : la requête reste ouverte jusqu'à 20s, réponse immédiate dès qu'il y a du nouveau
+    params = {"timeout": 20}  # long-polling : la requête reste ouverte jusqu'à 20s, réponse immédiate dès qu'il y a du nouveau
     if dernier_update_id is not None:
         params["offset"] = dernier_update_id + 1
     try:
@@ -1298,7 +1298,7 @@ def repondre_telegram(chat_id, message):
             f"{TELEGRAM_API_URL}/sendMessage",
             data={
                 "chat_id": chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True,
-                "reply_markup": json.dumps(PERSISTENT_KEYBOARD), # re-rattache le bouton fixe à chaque envoi
+                "reply_markup": json.dumps(PERSISTENT_KEYBOARD),  # re-rattache le bouton fixe à chaque envoi
             },
             timeout=15,
         )
@@ -1323,7 +1323,11 @@ LOC_LABELS = {
     "t2_lineaire": "🚕 T2 Linéaire",
 }
 NOMBRES_RAPIDES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30]
-attente_nombre_personnalise = {} # (chat_id, user_id) -> (terminal, mode)
+attente_nombre_personnalise = {}  # (chat_id, user_id) -> (terminal, mode)
+
+# ---- Alerte "volée" (beaucoup de monde, plus assez de taxis) ----
+DUREE_VOLEE_MINUTES = int(os.getenv("DUREE_VOLEE_MINUTES", "25"))
+volee_active = {}  # "v1"/"v2" -> {"debut": datetime, "message_id": int}
 
 
 def clavier_emplacements():
@@ -1332,7 +1336,22 @@ def clavier_emplacements():
          {"text": "🚕 T1 Linéaire", "callback_data": "loc:t1_lineaire"}],
         [{"text": "🅿️ T2 Parking", "callback_data": "loc:t2_parking"},
          {"text": "🚕 T2 Linéaire", "callback_data": "loc:t2_lineaire"}],
+        [{"text": "🚨 VOLÉE T1", "callback_data": "volee:v1"},
+         {"text": "🚨 VOLÉE T2", "callback_data": "volee:v2"}],
     ]}
+
+
+def clavier_confirmation_volee(terminal_code):
+    return {"inline_keyboard": [[
+        {"text": "✅ Confirmer", "callback_data": f"voleeconfirm:{terminal_code}"},
+        {"text": "❌ Annuler", "callback_data": "loc:retour"},
+    ]]}
+
+
+def clavier_annulation_volee(terminal_code):
+    return {"inline_keyboard": [[
+        {"text": "🛑 Annuler l'alerte", "callback_data": f"voleeannuler:{terminal_code}"},
+    ]]}
 
 
 def clavier_nombres(loc):
@@ -1427,6 +1446,77 @@ def envoyer_demande_nombre(chat_id, label):
     return None
 
 
+def texte_alerte_volee(terminal_code):
+    label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
+    return (
+        "🚨🚨🚨 <b>ALERTE VOLÉE</b> 🚨🚨🚨\n\n"
+        f"<b>BEAUCOUP DE MONDE À {label}</b>\n"
+        "Besoin de renfort dès que possible !\n\n"
+        f"⏱️ Expire automatiquement dans {DUREE_VOLEE_MINUTES} min si non annulée."
+    )
+
+
+def epingler_message(chat_id, message_id):
+    try:
+        requests.post(
+            f"{TELEGRAM_API_URL}/pinChatMessage",
+            data={"chat_id": chat_id, "message_id": message_id, "disable_notification": True},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error(f"Erreur épinglage message: {e}")
+
+
+def desepingler_message(chat_id, message_id):
+    try:
+        requests.post(
+            f"{TELEGRAM_API_URL}/unpinChatMessage",
+            data={"chat_id": chat_id, "message_id": message_id},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error(f"Erreur désépinglage message: {e}")
+
+
+def envoyer_alerte_volee(chat_id, terminal_code):
+    """Envoie le message d'alerte voyant, épinglé, avec un bouton pour l'annuler manuellement."""
+    try:
+        r = requests.post(
+            f"{TELEGRAM_API_URL}/sendMessage",
+            data={
+                "chat_id": chat_id,
+                "text": texte_alerte_volee(terminal_code),
+                "parse_mode": "HTML",
+                "disable_notification": False,  # notification normale, pas silencieuse
+                "reply_markup": json.dumps(clavier_annulation_volee(terminal_code)),
+            },
+            timeout=15,
+        )
+        if r.ok:
+            message_id = r.json().get("result", {}).get("message_id")
+            if message_id:
+                epingler_message(chat_id, message_id)
+            return message_id
+    except Exception as e:
+        logger.error(f"Erreur envoi alerte volée: {e}")
+    return None
+
+
+def verifier_expiration_volees():
+    """Fait expirer automatiquement les alertes volée après DUREE_VOLEE_MINUTES."""
+    a_retirer = [
+        code for code, info in volee_active.items()
+        if (maintenant() - info["debut"]).total_seconds() >= DUREE_VOLEE_MINUTES * 60
+    ]
+    for code in a_retirer:
+        info = volee_active.pop(code)
+        editer_message_telegram(
+            TELEGRAM_CHAT_ID, info["message_id"],
+            f"✅ Alerte VOLÉE {code.upper()} terminée (expirée après {DUREE_VOLEE_MINUTES} min)."
+        )
+        desepingler_message(TELEGRAM_CHAT_ID, info["message_id"])
+
+
 def traiter_callback(callback):
     """Gère les taps sur les boutons du clavier de signalement rapide."""
     data = callback.get("data", "")
@@ -1438,6 +1528,45 @@ def traiter_callback(callback):
     if data == "loc:retour":
         repondre_callback(callback_id)
         editer_message_telegram(chat_id, message_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
+        return
+
+    if data.startswith("voleeannuler:"):
+        terminal_code = data.split(":", 1)[1]
+        if terminal_code in volee_active:
+            info = volee_active.pop(terminal_code)
+            repondre_callback(callback_id, "Alerte annulée")
+            editer_message_telegram(
+                chat_id, info["message_id"],
+                f"✅ Alerte VOLÉE {terminal_code.upper()} terminée (annulée manuellement)."
+            )
+            desepingler_message(chat_id, info["message_id"])
+        else:
+            repondre_callback(callback_id)
+        return
+
+    if data.startswith("voleeconfirm:"):
+        terminal_code = data.split(":", 1)[1]
+        if terminal_code in volee_active:
+            # Déjà active : silence total, on ne renvoie rien dans le groupe.
+            repondre_callback(callback_id)
+            supprimer_message_telegram(chat_id, message_id)
+            return
+        repondre_callback(callback_id, "Alerte envoyée")
+        supprimer_message_telegram(chat_id, message_id)
+        nouveau_message_id = envoyer_alerte_volee(chat_id, terminal_code)
+        if nouveau_message_id:
+            volee_active[terminal_code] = {"debut": maintenant(), "message_id": nouveau_message_id}
+        return
+
+    if data.startswith("volee:"):
+        terminal_code = data.split(":", 1)[1]
+        repondre_callback(callback_id)
+        label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
+        editer_message_telegram(
+            chat_id, message_id,
+            f"⚠️ Confirmer l'alerte VOLÉE {label} ? Tout le monde va être prévenu.",
+            clavier_confirmation_volee(terminal_code)
+        )
         return
 
     if data.startswith("loc:"):
@@ -1683,6 +1812,9 @@ def commande_aide():
         "Ou écris directement :\n"
         "<code>T2 linéaire 15v</code> · <code>T2 15 pk</code>\n"
         "<code>T1 linéaire 4</code> · <code>T1 10 babel</code>\n\n"
+        "🚨 <b>Alerte VOLÉE</b> (trop de monde, pas assez de taxis)\n"
+        "Tape <code>v1</code> ou <code>v2</code>, ou utilise les boutons "
+        "VOLÉE dans <code>/signaler</code>\n\n"
         "<i>Toutes ces commandes utilisent uniquement les données déjà en cache "
         "(sources gratuites) — aucun appel API supplémentaire n'est déclenché.</i>"
     )
@@ -1712,6 +1844,16 @@ def traiter_commandes(vols, trains=None):
                 envoyer_telegram_clavier(chat_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
                 continue
 
+            if texte.lower() in ("v1", "v2"):
+                terminal_code = texte.lower()
+                label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
+                envoyer_telegram_clavier(
+                    chat_id,
+                    f"⚠️ Confirmer l'alerte VOLÉE {label} ? Tout le monde va être prévenu.",
+                    clavier_confirmation_volee(terminal_code)
+                )
+                continue
+
             user_id = (message.get("from") or {}).get("id")
             cle_attente = (chat_id, user_id)
             if cle_attente in attente_nombre_personnalise:
@@ -1721,9 +1863,9 @@ def traiter_commandes(vols, trains=None):
                     nombre = int(m.group())
                     qui = (message.get("from") or {}).get("first_name", "quelqu'un")
                     definir_position(terminal, nombre, mode, qui)
-                    supprimer_message_telegram(chat_id, message["message_id"]) # leur nombre tapé
+                    supprimer_message_telegram(chat_id, message["message_id"])  # leur nombre tapé
                     if prompt_id:
-                        supprimer_message_telegram(chat_id, prompt_id) # la question posée
+                        supprimer_message_telegram(chat_id, prompt_id)  # la question posée
                     repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures")
                 else:
                     repondre_telegram(chat_id, "Envoie juste un nombre, ex: 12")
@@ -1741,7 +1883,7 @@ def traiter_commandes(vols, trains=None):
             continue
 
         partie = texte.split()
-        commande = partie[0].lower().split("@")[0] # gère /prochain@NomDuBot
+        commande = partie[0].lower().split("@")[0]  # gère /prochain@NomDuBot
 
         if commande in ("/prochain", "/next"):
             repondre_telegram(chat_id, commande_prochain(vols))
@@ -1821,6 +1963,7 @@ def boucle_principale():
     while True:
         try:
             nettoyer_caches_si_besoin()
+            verifier_expiration_volees()
 
             vols = mettre_a_jour_cache_si_besoin(force=False)
             vols = enrichir_live_status(vols)
