@@ -283,10 +283,8 @@ def bloc_terminal(titre, vols):
     if not vols:
         return f"{titre} : 0\n"
     lignes = [f"{titre} : {len(vols)}"]
-    for v in vols[:5]:
+    for v in vols:
         lignes.append(ligne_vol(v))
-    if len(vols) > 5:
-        lignes.append(f"• +{len(vols) - 5} autres")
     return "\n".join(lignes) + "\n"
 
 
