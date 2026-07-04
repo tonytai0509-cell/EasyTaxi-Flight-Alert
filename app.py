@@ -1287,7 +1287,8 @@ def envoyer_alertes(vols):
         sections.append(f"🛬 <b>{titre}</b>\n{lignes}")
 
     if nouveaux_poses:
-        lignes = regrouper_par_terminal(nouveaux_poses, lambda v: ligne_alerte_vol(v, avec_sortie=True))
+        sortie_solo = len(nouveaux_poses) == 1
+        lignes = regrouper_par_terminal(nouveaux_poses, lambda v: ligne_alerte_vol(v, avec_sortie=sortie_solo))
         titre = "POSÉ" if len(nouveaux_poses) == 1 else f"POSÉS ({len(nouveaux_poses)})"
         sections.append(f"✅ <b>{titre}</b>\n{lignes}")
 
