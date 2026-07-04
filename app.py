@@ -1253,10 +1253,10 @@ def est_annule(status):
     return "cancel" in s or "annul" in s
 
 
-def encadrer_message(texte):
+def encadrer_message(texte, caractere="─", longueur=20):
     """Ajoute des lignes de séparation en haut/bas pour un effet 'encadré',
     sans bordures latérales (qui se déformeraient à cause des emojis)."""
-    ligne = "─" * 20
+    ligne = caractere * longueur
     return f"{ligne}\n{texte}\n{ligne}"
 
 
@@ -1724,7 +1724,7 @@ def traiter_callback(callback):
             else:
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures"
             texte_confirmation += f"\n<i>Signalé par {qui}</i>"
-            editer_message_telegram(chat_id, message_id, texte_confirmation)
+            editer_message_telegram(chat_id, message_id, f"🟧 {texte_confirmation}")
         else:
             repondre_callback(callback_id)
         return
@@ -1886,6 +1886,19 @@ def parser_position(texte):
     return None
 
 
+def detecter_ca_tire(texte):
+    """Détecte 'ça tire t1' / 'ça tire t2' (avec ou sans accent/espace),
+    pour signaler un rythme soutenu sans donner de nombre précis."""
+    t = texte.lower().strip()
+    if "tire" not in t:
+        return None
+    if re.search(r"\bt ?1\b", t):
+        return "t1"
+    if re.search(r"\bt ?2\b", t):
+        return "t2"
+    return None
+
+
 def label_position(terminal, mode):
     if terminal == "t1":
         if mode == "reserve":
@@ -1915,7 +1928,10 @@ def commande_etat_file():
             age = "à l'instant"
         else:
             age = f"il y a {mins} min"
-        lignes.append(f"{label_position(terminal, mode)} : <b>{nb}</b> ({age})")
+        if nb == "TIRE":
+            lignes.append(f"{label_position(terminal, mode)} : ⚡ <b>Rythme soutenu</b> ({age})")
+        else:
+            lignes.append(f"{label_position(terminal, mode)} : <b>{nb}</b> ({age})")
     return "\n".join(lignes)
 
 
@@ -2056,9 +2072,23 @@ def traiter_commandes(vols, trains=None):
                     supprimer_message_telegram(chat_id, message["message_id"])  # leur nombre tapé
                     if prompt_id:
                         supprimer_message_telegram(chat_id, prompt_id)  # la question posée
-                    repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
+                    repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
                 else:
                     repondre_telegram(chat_id, "Envoie juste un nombre, ex: 12")
+                continue
+
+            # 'Ça tire T1/T2' : signale un rythme soutenu, sans nombre précis.
+            terminal_tire = detecter_ca_tire(texte)
+            if terminal_tire:
+                qui = (message.get("from") or {}).get("first_name", "quelqu'un")
+                definir_position(terminal_tire, "TIRE", None, qui)
+                label = "Terminal 1" if terminal_tire == "t1" else "Terminal 2"
+                repondre_telegram(
+                    chat_id,
+                    f"🟧 ⚡ <b>Rythme soutenu signalé à {label}</b>\n"
+                    "Ça commence à tirer, restez prêts !\n"
+                    f"<i>Signalé par {qui}</i>"
+                )
                 continue
 
             # Message libre : on tente de le lire comme un signalement de voitures
@@ -2071,7 +2101,7 @@ def traiter_commandes(vols, trains=None):
                 definir_position(terminal, nombre, mode, qui)
                 # Pas de comptage au classement /top pour le texte libre (moins fiable),
                 # seuls les boutons et le chiffre personnalisé comptent.
-                repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
+                repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
             continue
 
         partie = texte.split()
