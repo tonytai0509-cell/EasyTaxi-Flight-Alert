@@ -1462,7 +1462,8 @@ def clavier_nombres(loc):
     if ligne:
         lignes.append(ligne)
     if loc == "t2_lineaire":
-        lignes.append([{"text": "A4 (½ parking)", "callback_data": f"cnt:{loc}:A4"}])
+        lignes.append([{"text": "A4 (½ parking)", "callback_data": f"cnt:{loc}:A4"},
+                        {"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
     if loc == "t1_babel":
         lignes.append([{"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
     lignes.append([{"text": "✏️ Autre nombre", "callback_data": f"custom:{loc}"}])
@@ -1720,7 +1721,13 @@ def traiter_callback(callback):
             if nombre == "A4":
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>A4</b> (½ parking)"
             elif nombre == "FULL":
-                texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>FULL</b> (Babel plein)"
+                if loc == "t1_babel":
+                    precision = "Babel plein"
+                elif loc == "t2_lineaire":
+                    precision = "Linéaire T2 plein"
+                else:
+                    precision = "complet"
+                texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>FULL</b> ({precision})"
             else:
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures"
             texte_confirmation += f"\n<i>Signalé par {qui}</i>"
