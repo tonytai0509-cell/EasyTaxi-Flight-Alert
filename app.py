@@ -517,6 +517,9 @@ def mettre_a_jour_cache_si_besoin(force=False):
             vols_cache = recuperer_vols_site()
             derniere_maj_site = maintenant()
             _verifier_watchdog_site(vols_cache)
+            nb_t1 = sum(1 for v in vols_cache if v.get("terminal") == "1")
+            nb_t2 = sum(1 for v in vols_cache if v.get("terminal") == "2")
+            logger.info(f"Scraping site: {len(vols_cache)} vols trouvés (T1={nb_t1}, T2={nb_t2})")
         except Exception as e:
             logger.warning(f"Erreur site aéroport: {e}")
 
