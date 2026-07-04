@@ -405,9 +405,21 @@ def recuperer_vols_site():
 
 
 def heure_aujourdhui(hh):
+    """Convertit une heure HH:MM en datetime, en gérant le passage de minuit :
+    si l'heure obtenue est à plus de 6h dans le passé (ex: il est 23:59 et le vol
+    est à 00:25), on suppose que c'est en réalité demain. Symétriquement, si elle
+    est à plus de 6h dans le futur (ex: il est 00:30 et le vol affiché est à 23:50),
+    on suppose que c'est en réalité hier."""
     try:
         h, m = map(int, hh.split(":"))
-        return maintenant().replace(hour=h, minute=m, second=0, microsecond=0)
+        maintenant_dt = maintenant()
+        dt = maintenant_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+        diff_heures = (dt - maintenant_dt).total_seconds() / 3600
+        if diff_heures < -6:
+            dt += timedelta(days=1)
+        elif diff_heures > 6:
+            dt -= timedelta(days=1)
+        return dt
     except Exception:
         return None
 
