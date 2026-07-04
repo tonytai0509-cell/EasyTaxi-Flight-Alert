@@ -1528,12 +1528,13 @@ def commande_prochain(vols):
     )
 
 
-def commande_terminal(vols, terminal):
-    filtres = [v for v in vols_dans_minutes(vols, 60) if v["terminal"] == terminal]
+def commande_terminal(vols, terminal, minutes=60):
+    filtres = [v for v in vols_dans_minutes(vols, minutes) if v["terminal"] == terminal]
+    duree_label = f"{minutes // 60}h" if minutes % 60 == 0 else f"{minutes}min"
     if not filtres:
-        return f"Aucun vol prévu en Terminal {terminal} dans l'heure (données cache)."
-    corps = "\n".join(ligne_vol(v) for v in filtres[:10])
-    return f"📍 <b>Terminal {terminal}</b> (1h)\n<code>{corps}</code>"
+        return f"Aucun vol prévu en Terminal {terminal} dans les {duree_label} (données cache)."
+    corps = "\n".join(ligne_vol(v) for v in filtres[:20])
+    return f"📍 <b>Terminal {terminal}</b> ({duree_label})\n<code>{corps}</code>"
 
 
 def commande_vol(vols, numero):
@@ -1770,8 +1771,8 @@ def commande_aide():
     return (
         "📋 <b>Commandes disponibles</b>\n"
         "/prochain — prochain vol attendu\n"
-        "/t1 — vols Terminal 1 (1h)\n"
-        "/t2 — vols Terminal 2 (1h)\n"
+        "/t1 — vols Terminal 1 (1h) · /t1+ (3h)\n"
+        "/t2 — vols Terminal 2 (1h) · /t2+ (3h)\n"
         "/vol NUMERO — chercher un vol précis\n"
         "/tgv — prochains TGV à Nice-Ville (1h)\n"
         "/etat — voitures aux terminaux\n"
@@ -1886,6 +1887,10 @@ def traiter_commandes(vols, trains=None):
             repondre_telegram(chat_id, commande_terminal(vols, "1"))
         elif commande == "/t2":
             repondre_telegram(chat_id, commande_terminal(vols, "2"))
+        elif commande == "/t1+":
+            repondre_telegram(chat_id, commande_terminal(vols, "1", minutes=180))
+        elif commande == "/t2+":
+            repondre_telegram(chat_id, commande_terminal(vols, "2", minutes=180))
         elif commande in ("/vol", "/flight") and len(partie) > 1:
             repondre_telegram(chat_id, commande_vol(vols, partie[1]))
         elif commande == "/tgv":
