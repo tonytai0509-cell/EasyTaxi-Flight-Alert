@@ -1975,7 +1975,13 @@ def boucle_principale():
             envoyer_resume_matin_si_besoin(vols)
 
             if dernier_resume is None or (maintenant() - dernier_resume).total_seconds() >= FREQUENCE_RESUME_SECONDES:
-                envoyer_telegram(creer_resume(vols, trains))
+                d60 = vols_dans_minutes(vols, 60)
+                trains_60 = trains_dans_minutes(trains, 60) if trains else []
+                rien_a_signaler = len(d60) == 0 and len(trains_60) == 0
+                if _en_heures_creuses() and rien_a_signaler:
+                    logger.info("Résumé périodique sauté (heures creuses, rien à signaler).")
+                else:
+                    envoyer_telegram(creer_resume(vols, trains))
                 dernier_resume = maintenant()
 
         except Exception as e:
