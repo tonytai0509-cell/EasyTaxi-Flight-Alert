@@ -59,6 +59,9 @@ QUOTA_FICHIER = os.getenv("QUOTA_FICHIER", "quota_api.json")
 QUOTA_SEUIL_ALERTE = 0.9  # avertir Telegram quand 90% du quota est consommé
 quota_alerte_envoyee = False
 
+# ---- Plafond journalier strict (en plus du mensuel, ne dépend pas du budget adaptatif) ----
+QUOTA_JOUR_MAX = int(os.getenv("QUOTA_JOUR_MAX", "190"))
+
 FREQUENCE_RESUME_SECONDES = 1800
 RETARD_IMPORTANT_MINUTES = 20
 
@@ -97,6 +100,11 @@ dernier_update_id = None
 # ---- Résumé du matin ----
 RESUME_MATIN_HEURE = int(os.getenv("RESUME_MATIN_HEURE", "6"))
 dernier_resume_matin = None
+
+# ---- Top 5 des annonces de voitures, envoyé chaque soir ----
+STATS_FICHIER = os.getenv("STATS_FICHIER", "stats_annonces.json")
+HEURE_STATS_SOIR = int(os.getenv("HEURE_STATS_SOIR", "22"))
+dernier_stats_soir = None
 
 # ---- Watchdog scraping site ----
 WATCHDOG_SEUIL_ECHECS = 3
@@ -294,8 +302,12 @@ def _charger_quota():
     except Exception:
         data = {}
     mois_actuel = maintenant().strftime("%Y-%m")
+    jour_actuel = maintenant().strftime("%Y-%m-%d")
     if data.get("mois") != mois_actuel:
-        data = {"mois": mois_actuel, "compteur": 0}
+        data = {"mois": mois_actuel, "compteur": 0, "jour": jour_actuel, "compteur_jour": 0}
+    if data.get("jour") != jour_actuel:
+        data["jour"] = jour_actuel
+        data["compteur_jour"] = 0
     return data
 
 
@@ -316,8 +328,19 @@ def quota_utilise():
     return _charger_quota()["compteur"]
 
 
+def quota_jour_utilise():
+    return _charger_quota().get("compteur_jour", 0)
+
+
+def quota_jour_restant():
+    return max(0, QUOTA_JOUR_MAX - quota_jour_utilise())
+
+
 def api_disponible(cout=1):
-    """Vérifie qu'on peut encore consommer `cout` appels ce mois-ci, marge de sécurité incluse."""
+    """Vérifie qu'on peut encore consommer `cout` appels : à la fois le plafond
+    journalier strict ET le plafond mensuel avec marge de sécurité."""
+    if quota_jour_restant() < cout:
+        return False
     return quota_restant() >= cout + QUOTA_MARGE_SECURITE
 
 
@@ -325,6 +348,7 @@ def consommer_quota(cout=1):
     global quota_alerte_envoyee
     data = _charger_quota()
     data["compteur"] += cout
+    data["compteur_jour"] = data.get("compteur_jour", 0) + cout
     _sauver_quota(data)
 
     ratio = data["compteur"] / QUOTA_API_MENSUEL
@@ -1577,6 +1601,7 @@ def traiter_callback(callback):
     message_id = callback["message"]["message_id"]
     callback_id = callback["id"]
     qui = (callback.get("from") or {}).get("first_name", "quelqu'un")
+    user_id_stats = (callback.get("from") or {}).get("id")
 
     if data == "loc:retour":
         repondre_callback(callback_id)
@@ -1645,6 +1670,7 @@ def traiter_callback(callback):
         terminal, mode = LOC_INFOS.get(loc, (None, None))
         if terminal:
             definir_position(terminal, nombre, mode, qui)
+            enregistrer_annonce(user_id_stats, qui)
             repondre_callback(callback_id, "Enregistré ✅")
             if nombre == "A4":
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>A4</b> (½ parking)"
@@ -1714,7 +1740,10 @@ def commande_vol(vols, numero):
 
 
 def commande_quota():
-    return f"🔌 Quota API : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés, {quota_restant()} restants ce mois-ci."
+    return (
+        f"🔌 Quota API mensuel : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés, {quota_restant()} restants.\n"
+        f"📅 Aujourd'hui : {quota_jour_utilise()}/{QUOTA_JOUR_MAX} utilisés, {quota_jour_restant()} restants."
+    )
 
 
 def commande_tgv(trains):
@@ -1850,6 +1879,62 @@ def commande_vider_file():
     return "🔄 Les compteurs T1 et T2 ont été remis à zéro."
 
 
+# =========================
+# TOP DES ANNONCES (qui signale le plus de voitures dans la journée)
+# =========================
+
+def charger_stats_jour():
+    try:
+        with open(STATS_FICHIER, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    jour_actuel = maintenant().strftime("%Y-%m-%d")
+    if data.get("jour") != jour_actuel:
+        data = {"jour": jour_actuel, "compteurs": {}}
+    return data
+
+
+def sauver_stats_jour(data):
+    try:
+        with open(STATS_FICHIER, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.error(f"Erreur sauvegarde stats annonces: {e}")
+
+
+def enregistrer_annonce(user_id, nom):
+    """Compte une annonce de plus pour ce chauffeur aujourd'hui (remis à zéro chaque jour)."""
+    if not user_id:
+        return
+    data = charger_stats_jour()
+    cle = str(user_id)
+    info = data["compteurs"].get(cle, {"nom": nom, "nombre": 0})
+    info["nom"] = nom or info.get("nom", "quelqu'un")
+    info["nombre"] += 1
+    data["compteurs"][cle] = info
+    sauver_stats_jour(data)
+
+
+def commande_top_annonces():
+    data = charger_stats_jour()
+    compteurs = data.get("compteurs", {})
+    if not compteurs:
+        return "Aucune annonce enregistrée aujourd'hui."
+    classement = sorted(compteurs.values(), key=lambda x: x["nombre"], reverse=True)[:5]
+    lignes = [f"{i + 1}. {c['nom']} — {c['nombre']} annonce(s)" for i, c in enumerate(classement)]
+    return "🏆 <b>Top annonces du jour</b>\n\n" + "\n".join(lignes)
+
+
+def envoyer_stats_soir_si_besoin():
+    global dernier_stats_soir
+    aujourdhui = maintenant().date()
+    if maintenant().hour != HEURE_STATS_SOIR or dernier_stats_soir == aujourdhui:
+        return
+    envoyer_telegram(encadrer_message(commande_top_annonces()))
+    dernier_stats_soir = aujourdhui
+
+
 def commande_aide():
     return (
         "📋 <b>Commandes disponibles</b>\n"
@@ -1859,7 +1944,8 @@ def commande_aide():
         "/vol NUMERO — chercher un vol précis\n"
         "/tgv — prochains TGV à Nice-Ville (1h)\n"
         "/quota — quota API restant\n"
-        "/etat — voitures aux terminaux\n\n"
+        "/etat — voitures aux terminaux\n"
+        "/top — top 5 des annonces du jour\n\n"
         "🚖 <b>Signaler des voitures</b>\n"
         "Appuie sur le bouton <b>🚖 Signaler</b> en bas de l'écran (2 taps)\n"
         "Ou tape <code>/v</code>\n"
@@ -1917,6 +2003,7 @@ def traiter_commandes(vols, trains=None):
                     nombre = int(m.group())
                     qui = (message.get("from") or {}).get("first_name", "quelqu'un")
                     definir_position(terminal, nombre, mode, qui)
+                    enregistrer_annonce(user_id, qui)
                     supprimer_message_telegram(chat_id, message["message_id"])  # leur nombre tapé
                     if prompt_id:
                         supprimer_message_telegram(chat_id, prompt_id)  # la question posée
@@ -1933,6 +2020,8 @@ def traiter_commandes(vols, trains=None):
                 terminal, nombre, mode = resultat
                 qui = (message.get("from") or {}).get("first_name", "quelqu'un")
                 definir_position(terminal, nombre, mode, qui)
+                # Pas de comptage au classement /top pour le texte libre (moins fiable),
+                # seuls les boutons et le chiffre personnalisé comptent.
                 repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
             continue
 
@@ -1955,6 +2044,8 @@ def traiter_commandes(vols, trains=None):
             repondre_telegram(chat_id, commande_etat_file())
         elif commande == "/vide":
             repondre_telegram(chat_id, commande_vider_file())
+        elif commande == "/top":
+            repondre_telegram(chat_id, commande_top_annonces())
         elif commande in ("/signaler", "/rapide", "/v"):
             envoyer_telegram_clavier(chat_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
         elif commande in ("/aide", "/help", "/start"):
@@ -2027,6 +2118,7 @@ def boucle_principale():
             envoyer_alertes_trains(trains)
 
             envoyer_resume_matin_si_besoin(vols)
+            envoyer_stats_soir_si_besoin()
 
             if dernier_resume is None or (maintenant() - dernier_resume).total_seconds() >= FREQUENCE_RESUME_SECONDES:
                 d60 = vols_dans_minutes(vols, 60)
