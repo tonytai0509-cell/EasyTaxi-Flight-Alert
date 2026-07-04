@@ -1212,7 +1212,7 @@ def est_annule(status):
 def encadrer_message(texte):
     """Ajoute des lignes de séparation en haut/bas pour un effet 'encadré',
     sans bordures latérales (qui se déformeraient à cause des emojis)."""
-    ligne = "▬" * 24
+    ligne = "─" * 20
     return f"{ligne}\n{texte}\n{ligne}"
 
 
@@ -1228,7 +1228,7 @@ def ligne_alerte_vol(v, avec_sortie=False, avec_retard=False):
             debut, fin = base_time + timedelta(minutes=10), base_time + timedelta(minutes=18)
         else:
             debut, fin = base_time + timedelta(minutes=12), base_time + timedelta(minutes=22)
-        ligne += f" 🚖{debut.strftime('%H:%M')}-{fin.strftime('%H:%M')}"
+        ligne += f"\n  🚶 {debut.strftime('%H:%M')}-{fin.strftime('%H:%M')}"
     return ligne
 
 
