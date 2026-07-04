@@ -1564,7 +1564,9 @@ def texte_alerte_volee(terminal_code, qui=None):
     )
     if qui:
         corps += f"\n<i>Déclenché par {qui}</i>"
-    return encadrer_message(corps)
+    # Pas d'encadrement ici : les 🚨 doivent être les tout premiers caractères,
+    # sinon l'aperçu épinglé en haut du chat n'affiche que les tirets du cadre.
+    return corps
 
 
 def epingler_message(chat_id, message_id):
