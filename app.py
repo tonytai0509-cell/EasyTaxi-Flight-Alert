@@ -1125,9 +1125,9 @@ def icone_statut_court(v):
     if "cancel" in status.lower() or "annul" in status.lower():
         return "❌"
     if retard >= RETARD_IMPORTANT_MINUTES:
-        return f"⏰+{retard}"
+        return f"⏰ +{retard} min"
     if retard >= 10:
-        return f"🟡+{retard}"
+        return f"🟡 +{retard} min"
     return "🟢"
 
 
@@ -1139,9 +1139,9 @@ def ligne_vol(v):
 
 def bloc_terminal(titre, vols):
     if not vols:
-        return f"{titre} : 0\n"
+        return f"{titre} (0)\n"
     corps = "\n".join(ligne_vol(v) for v in vols)
-    return f"{titre} : {len(vols)}\n{corps}\n"
+    return f"{titre} ({len(vols)})\n{corps}\n"
 
 
 def bloc_trains(trains):
@@ -1164,13 +1164,13 @@ def creer_resume(vols, trains=None):
         "✈️ <b>EASYTAXI FLIGHT ALERT</b>\n"
         f"🕒 {maintenant().strftime('%H:%M')} | 🚖 {niveau_affluence(len(d30))} | ⚠️ {len(retards)}\n"
         f"🛬 Approche : {len(approches)} | ✅ Posés : {len(poses)}\n\n"
-        f"🟢 À poser dans 30 min : <b>{len(d30)}</b> vols\n"
-        f"🟣 À poser dans 1h : <b>{len(d60)}</b> vols\n\n"
-        "🛬 <b>Prochains 30min</b>\n"
+        f"<b>🟢 À poser dans 30 min : {len(d30)} vols</b>\n"
+        f"🟣 À poser dans 1h : {len(d60)} vols\n\n"
+        "✈️ <b>Arrivées - 30 min</b>\n"
         "<i>🟢 prévu · 🟡/⏰ retard · 🛬 approche · ✅ posé</i>\n"
     )
-    msg += bloc_terminal("🔵 T1", t1_30)
-    msg += bloc_terminal("🟣 T2", t2_30)
+    msg += bloc_terminal("🔵 Terminal 1", t1_30)
+    msg += bloc_terminal("🟣 Terminal 2", t2_30)
 
     if trains:
         trains_30 = trains_dans_minutes(trains, 30)
