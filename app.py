@@ -1133,17 +1133,15 @@ def icone_statut_court(v):
 
 def ligne_vol(v):
     heure = heure_lisible(v)
-    ville = html.escape((v['provenance'] or "")[:13])
-    compagnie = html.escape((v['compagnie'] or "")[:11])
-    return f"{heure:<12} {ville:<13} {compagnie:<11} {icone_statut_court(v)}"
+    ville = html.escape((v['provenance'] or "")[:18])
+    return f"• {heure} {ville} {icone_statut_court(v)}"
 
 
 def bloc_terminal(titre, vols):
     if not vols:
         return f"{titre} : 0\n"
-    lignes = [f"{titre} : {len(vols)}"]
     corps = "\n".join(ligne_vol(v) for v in vols)
-    return f"{lignes[0]}\n<code>{corps}</code>\n"
+    return f"{titre} : {len(vols)}\n{corps}\n"
 
 
 def bloc_trains(trains):
@@ -1158,8 +1156,6 @@ def creer_resume(vols, trains=None):
     d60 = vols_dans_minutes(vols, 60)
     t1_30 = [v for v in d30 if v["terminal"] == "1"]
     t2_30 = [v for v in d30 if v["terminal"] == "2"]
-    t1_60 = [v for v in d60 if v["terminal"] == "1"]
-    t2_60 = [v for v in d60 if v["terminal"] == "2"]
     approches = [v for v in d30 if est_approche(v.get("site_status") or v.get("live_status") or v.get("status"))]
     poses = [v for v in d30 if est_pose(v.get("site_status") or v.get("live_status") or v.get("status"))]
     retards = [v for v in d60 if v["retard"] >= RETARD_IMPORTANT_MINUTES and not est_arrive_ou_approche(v.get("site_status") or v.get("live_status") or v.get("status"))]
@@ -1167,9 +1163,9 @@ def creer_resume(vols, trains=None):
     msg = (
         "✈️ <b>EASYTAXI FLIGHT ALERT</b>\n"
         f"🕒 {maintenant().strftime('%H:%M')} | 🚖 {niveau_affluence(len(d30))} | ⚠️ {len(retards)}\n"
-        f"🛬 Approche : {len(approches)} | ✅ Posés : {len(poses)}\n"
-        f"⏱️ 30min : <b>{len(d30)}</b> (🔵{len(t1_30)} / 🟣{len(t2_30)})\n"
-        f"🕐 1h : <b>{len(d60)}</b> (🔵{len(t1_60)} / 🟣{len(t2_60)})\n\n"
+        f"🛬 Approche : {len(approches)} | ✅ Posés : {len(poses)}\n\n"
+        f"🟢 À poser dans 30 min : <b>{len(d30)}</b> vols\n"
+        f"🟣 À poser dans 1h : <b>{len(d60)}</b> vols\n\n"
         "🛬 <b>Prochains 30min</b>\n"
         "<i>🟢 prévu · 🟡/⏰ retard · 🛬 approche · ✅ posé</i>\n"
     )
@@ -1180,7 +1176,6 @@ def creer_resume(vols, trains=None):
         trains_30 = trains_dans_minutes(trains, 30)
         msg += bloc_trains(trains_30)
 
-    msg += f"\n🔌 API vols : {quota_utilise()}/{QUOTA_API_MENSUEL} ce mois-ci"
     return msg.strip()
 
 
