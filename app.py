@@ -1724,7 +1724,7 @@ def traiter_callback(callback):
                 if loc == "t1_babel":
                     precision = "Babel plein"
                 elif loc == "t2_lineaire":
-                    precision = "Linéaire T2 plein"
+                    precision = "Fin linéaire T2"
                 else:
                     precision = "complet"
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>FULL</b> ({precision})"
