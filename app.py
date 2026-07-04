@@ -914,35 +914,24 @@ def envoyer_alertes_trains(trains):
     sections = []
 
     if nouveaux_annules:
-        lignes = "\n".join(f"• Train {t['numero']} (prévu {t['prevu']})" for t in nouveaux_annules)
+        lignes = "\n".join(f"{t['prevu']:<8} Train {t['numero']}" for t in nouveaux_annules)
         titre = "TGV ANNULÉ" if len(nouveaux_annules) == 1 else f"TGV ANNULÉS ({len(nouveaux_annules)})"
-        sections.append(f"❌ <b>{titre}</b>\n{lignes}")
+        sections.append(f"❌ <b>{titre}</b>\n<code>{lignes}</code>")
 
     if nouvelles_approches:
-        lignes = "\n".join(
-            f"• Train {t['numero']} ({t.get('type', 'TGV')}) - {heure_lisible_train(t)}"
-            + (f" - Voie {t['voie']}" if t.get("voie") else "")
-            for t in nouvelles_approches
-        )
+        lignes = "\n".join(ligne_train(t) for t in nouvelles_approches)
         titre = "TGV EN APPROCHE" if len(nouvelles_approches) == 1 else f"TGV EN APPROCHE ({len(nouvelles_approches)})"
-        sections.append(f"🚄 <b>{titre}</b>\n{lignes}")
+        sections.append(f"🚄 <b>{titre}</b>\n<code>{lignes}</code>")
 
     if nouveaux_arrives:
-        lignes = "\n".join(
-            f"• Train {t['numero']} ({t.get('type', 'TGV')}) - {t['actuel']}"
-            + (f" - Voie {t['voie']}" if t.get("voie") else "")
-            for t in nouveaux_arrives
-        )
+        lignes = "\n".join(ligne_train(t) for t in nouveaux_arrives)
         titre = "TGV ARRIVÉ" if len(nouveaux_arrives) == 1 else f"TGV ARRIVÉS ({len(nouveaux_arrives)})"
-        sections.append(f"✅ <b>{titre}</b>\n{lignes}")
+        sections.append(f"✅ <b>{titre}</b>\n<code>{lignes}</code>")
 
     if nouveaux_retards:
-        lignes = "\n".join(
-            f"• Train {t['numero']} - {heure_lisible_train(t)} (<b>+{t['retard']}min</b>)"
-            for t in nouveaux_retards
-        )
+        lignes = "\n".join(ligne_train(t) for t in nouveaux_retards)
         titre = "RETARD TGV" if len(nouveaux_retards) == 1 else f"RETARDS TGV ({len(nouveaux_retards)})"
-        sections.append(f"⏰ <b>{titre}</b>\n{lignes}")
+        sections.append(f"⏰ <b>{titre}</b>\n<code>{lignes}</code>")
 
     if sections:
         envoyer_telegram(encadrer_message("\n\n".join(sections)))
@@ -1227,6 +1216,35 @@ def encadrer_message(texte):
     return f"{ligne}\n{texte}\n{ligne}"
 
 
+def ligne_alerte_vol(v, avec_sortie=False, avec_retard=False):
+    heure = heure_lisible(v)
+    ville = html.escape((v['provenance'] or "")[:14])
+    compagnie = html.escape((v['compagnie'] or "")[:12])
+    ligne = f"{heure:<12} {ville:<15} {compagnie:<13}"
+    if avec_retard:
+        ligne += f" +{v['retard']}min"
+    if avec_sortie and v.get("dt_actuel"):
+        base_time = v["dt_actuel"].astimezone(PARIS)
+        if str(v.get("terminal")) == "1":
+            debut, fin = base_time + timedelta(minutes=10), base_time + timedelta(minutes=18)
+        else:
+            debut, fin = base_time + timedelta(minutes=12), base_time + timedelta(minutes=22)
+        ligne += f"  🚖{debut.strftime('%H:%M')}-{fin.strftime('%H:%M')}"
+    return ligne
+
+
+def regrouper_par_terminal(liste_vols, formatter):
+    """Regroupe une liste de vols par terminal (T1 puis T2), comme dans le résumé principal."""
+    t1 = [v for v in liste_vols if str(v.get("terminal")) == "1"]
+    t2 = [v for v in liste_vols if str(v.get("terminal")) == "2"]
+    blocs = []
+    if t1:
+        blocs.append("🔵 T1\n" + "\n".join(formatter(v) for v in t1))
+    if t2:
+        blocs.append("🟣 T2\n" + "\n".join(formatter(v) for v in t2))
+    return "\n".join(blocs)
+
+
 def envoyer_alertes(vols):
     nouveaux_annules, nouvelles_approches, nouveaux_poses, nouveaux_retards = [], [], [], []
 
@@ -1257,36 +1275,27 @@ def envoyer_alertes(vols):
     sections = []
 
     if nouveaux_annules:
-        lignes = "\n".join(
-            f"• {v['provenance']} - {v['compagnie']} - {emoji_terminal(v['terminal'])} (prévu {v['prevu']})"
-            for v in nouveaux_annules
+        lignes = regrouper_par_terminal(
+            nouveaux_annules,
+            lambda v: f"{v['prevu']:<8} {html.escape((v['provenance'] or '')[:15]):<16}"
         )
         titre = "VOL ANNULÉ" if len(nouveaux_annules) == 1 else f"VOLS ANNULÉS ({len(nouveaux_annules)})"
-        sections.append(f"❌ <b>{titre}</b>\n{lignes}")
+        sections.append(f"❌ <b>{titre}</b>\n<code>{lignes}</code>")
 
     if nouvelles_approches:
-        lignes = "\n".join(
-            f"• {v['provenance']} - {v['compagnie']} - {emoji_terminal(v['terminal'])} - {heure_lisible(v)}"
-            for v in nouvelles_approches
-        )
+        lignes = regrouper_par_terminal(nouvelles_approches, ligne_alerte_vol)
         titre = "EN APPROCHE" if len(nouvelles_approches) == 1 else f"EN APPROCHE ({len(nouvelles_approches)})"
-        sections.append(f"🛬 <b>{titre}</b>\n{lignes}")
+        sections.append(f"🛬 <b>{titre}</b>\n<code>{lignes}</code>")
 
     if nouveaux_poses:
-        lignes = "\n".join(
-            f"• {v['provenance']} - {v['compagnie']} - {emoji_terminal(v['terminal'])} - {v['actuel']} - {sortie_passagers(v)}"
-            for v in nouveaux_poses
-        )
+        lignes = regrouper_par_terminal(nouveaux_poses, lambda v: ligne_alerte_vol(v, avec_sortie=True))
         titre = "POSÉ" if len(nouveaux_poses) == 1 else f"POSÉS ({len(nouveaux_poses)})"
-        sections.append(f"✅ <b>{titre}</b>\n{lignes}")
+        sections.append(f"✅ <b>{titre}</b>\n<code>{lignes}</code>")
 
     if nouveaux_retards:
-        lignes = "\n".join(
-            f"• {v['provenance']} - {v['compagnie']} - {emoji_terminal(v['terminal'])} - {heure_lisible(v)} (<b>+{v['retard']}min</b>)"
-            for v in nouveaux_retards
-        )
+        lignes = regrouper_par_terminal(nouveaux_retards, lambda v: ligne_alerte_vol(v, avec_retard=True))
         titre = "RETARD" if len(nouveaux_retards) == 1 else f"RETARDS ({len(nouveaux_retards)})"
-        sections.append(f"⏰ <b>{titre}</b>\n{lignes}")
+        sections.append(f"⏰ <b>{titre}</b>\n<code>{lignes}</code>")
 
     if sections:
         envoyer_telegram(encadrer_message("\n\n".join(sections)))
