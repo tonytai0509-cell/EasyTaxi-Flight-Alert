@@ -886,46 +886,66 @@ def trains_dans_minutes(trains, minutes):
 
 
 def envoyer_alertes_trains(trains):
+    nouveaux_annules, nouvelles_approches, nouveaux_arrives, nouveaux_retards = [], [], [], []
+
     for t in trains:
         cle = cle_train(t)
         statut = statut_train(t)
 
         if statut == "annule" and cle not in trains_annules_annonces:
-            envoyer_telegram(
-                "❌ <b>TGV ANNULÉ</b>\n\n"
-                f"🚄 Train {t['numero']}\n"
-                f"🕒 Prévu {t['prevu']}"
-            )
+            nouveaux_annules.append(t)
             trains_annules_annonces.add(cle)
             continue
 
         if statut == "approche" and cle not in trains_approche_annonces:
-            envoyer_telegram(
-                "🚄 <b>TGV EN APPROCHE</b>\n\n"
-                f"Train {t['numero']} ({t.get('type', 'TGV')})\n"
-                f"🕒 {heure_lisible_train(t)}"
-                + (f"\n📍 Voie {t['voie']}" if t.get("voie") else "")
-            )
+            nouvelles_approches.append(t)
             trains_approche_annonces.add(cle)
 
         if statut == "arrive" and cle not in trains_arrives_annonces:
-            envoyer_telegram(
-                "✅ <b>TGV ARRIVÉ</b>\n\n"
-                f"Train {t['numero']} ({t.get('type', 'TGV')})\n"
-                f"🕒 {t['actuel']}"
-                + (f"\n📍 Voie {t['voie']}" if t.get("voie") else "")
-            )
+            nouveaux_arrives.append(t)
             trains_arrives_annonces.add(cle)
 
         if t.get("retard", 0) >= RETARD_TRAIN_IMPORTANT_MINUTES and statut not in ("arrive", "annule"):
             ancien = trains_retard_annonces.get(cle)
             if ancien is None or t["retard"] >= ancien + 10:
-                envoyer_telegram(
-                    "⏰ <b>RETARD TGV</b>\n\n"
-                    f"Train {t['numero']}\n"
-                    f"🕒 {heure_lisible_train(t)} (<b>+{t['retard']}min</b>)"
-                )
+                nouveaux_retards.append(t)
                 trains_retard_annonces[cle] = t["retard"]
+
+    sections = []
+
+    if nouveaux_annules:
+        lignes = "\n".join(f"• Train {t['numero']} (prévu {t['prevu']})" for t in nouveaux_annules)
+        titre = "TGV ANNULÉ" if len(nouveaux_annules) == 1 else f"TGV ANNULÉS ({len(nouveaux_annules)})"
+        sections.append(f"❌ <b>{titre}</b>\n{lignes}")
+
+    if nouvelles_approches:
+        lignes = "\n".join(
+            f"• Train {t['numero']} ({t.get('type', 'TGV')}) - {heure_lisible_train(t)}"
+            + (f" - Voie {t['voie']}" if t.get("voie") else "")
+            for t in nouvelles_approches
+        )
+        titre = "TGV EN APPROCHE" if len(nouvelles_approches) == 1 else f"TGV EN APPROCHE ({len(nouvelles_approches)})"
+        sections.append(f"🚄 <b>{titre}</b>\n{lignes}")
+
+    if nouveaux_arrives:
+        lignes = "\n".join(
+            f"• Train {t['numero']} ({t.get('type', 'TGV')}) - {t['actuel']}"
+            + (f" - Voie {t['voie']}" if t.get("voie") else "")
+            for t in nouveaux_arrives
+        )
+        titre = "TGV ARRIVÉ" if len(nouveaux_arrives) == 1 else f"TGV ARRIVÉS ({len(nouveaux_arrives)})"
+        sections.append(f"✅ <b>{titre}</b>\n{lignes}")
+
+    if nouveaux_retards:
+        lignes = "\n".join(
+            f"• Train {t['numero']} - {heure_lisible_train(t)} (<b>+{t['retard']}min</b>)"
+            for t in nouveaux_retards
+        )
+        titre = "RETARD TGV" if len(nouveaux_retards) == 1 else f"RETARDS TGV ({len(nouveaux_retards)})"
+        sections.append(f"⏰ <b>{titre}</b>\n{lignes}")
+
+    if sections:
+        envoyer_telegram(encadrer_message("\n\n".join(sections)))
 
 
 # =========================
@@ -1200,55 +1220,76 @@ def est_annule(status):
     return "cancel" in s or "annul" in s
 
 
+def encadrer_message(texte):
+    """Ajoute des lignes de séparation en haut/bas pour un effet 'encadré',
+    sans bordures latérales (qui se déformeraient à cause des emojis)."""
+    ligne = "▬" * 24
+    return f"{ligne}\n{texte}\n{ligne}"
+
+
 def envoyer_alertes(vols):
+    nouveaux_annules, nouvelles_approches, nouveaux_poses, nouveaux_retards = [], [], [], []
+
     for v in vols:
         cle = cle_vol(v)
         status = v.get("site_status") or v.get("live_status") or v.get("status")
 
         if est_annule(status) and cle not in annules_deja_annonces:
-            envoyer_telegram(
-                "❌ <b>VOL ANNULÉ</b>\n\n"
-                f"🌍 <b>{v['provenance']}</b>\n"
-                f"✈️ {v['compagnie']}\n"
-                f"📍 {emoji_terminal(v['terminal'])} - {label_terminal(v['terminal'])}\n"
-                f"🕒 Prévu {v['prevu']}"
-            )
+            nouveaux_annules.append(v)
             annules_deja_annonces.add(cle)
             continue
 
         if est_approche(status) and cle not in approches_deja_annoncees:
-            envoyer_telegram(
-                "🛬 <b>EN APPROCHE</b>\n\n"
-                f"🌍 <b>{v['provenance']}</b>\n"
-                f"✈️ {v['compagnie']}\n"
-                f"📍 {emoji_terminal(v['terminal'])} - {label_terminal(v['terminal'])}\n"
-                f"🕒 {heure_lisible(v)}"
-            )
+            nouvelles_approches.append(v)
             approches_deja_annoncees.add(cle)
 
         if est_pose(status) and cle not in poses_deja_annonces:
-            envoyer_telegram(
-                "✅ <b>POSÉ</b>\n\n"
-                f"🌍 <b>{v['provenance']}</b>\n"
-                f"✈️ {v['compagnie']}\n"
-                f"📍 {emoji_terminal(v['terminal'])} - {label_terminal(v['terminal'])}\n"
-                f"🕒 {v['actuel']}\n"
-                f"{sortie_passagers(v)}"
-            )
+            nouveaux_poses.append(v)
             poses_deja_annonces.add(cle)
             enregistrer_vol_historique(v)
 
         if v["retard"] >= RETARD_IMPORTANT_MINUTES and not est_arrive_ou_approche(status):
             ancien = retards_deja_annonces.get(cle)
             if ancien is None or v["retard"] >= ancien + 10:
-                envoyer_telegram(
-                    "⏰ <b>RETARD</b>\n\n"
-                    f"🌍 <b>{v['provenance']}</b>\n"
-                    f"✈️ {v['compagnie']}\n"
-                    f"📍 {emoji_terminal(v['terminal'])} - {label_terminal(v['terminal'])}\n"
-                    f"🕒 {heure_lisible(v)} (<b>+{v['retard']}min</b>)"
-                )
+                nouveaux_retards.append(v)
                 retards_deja_annonces[cle] = v["retard"]
+
+    sections = []
+
+    if nouveaux_annules:
+        lignes = "\n".join(
+            f"• {v['provenance']} - {v['compagnie']} - {emoji_terminal(v['terminal'])} (prévu {v['prevu']})"
+            for v in nouveaux_annules
+        )
+        titre = "VOL ANNULÉ" if len(nouveaux_annules) == 1 else f"VOLS ANNULÉS ({len(nouveaux_annules)})"
+        sections.append(f"❌ <b>{titre}</b>\n{lignes}")
+
+    if nouvelles_approches:
+        lignes = "\n".join(
+            f"• {v['provenance']} - {v['compagnie']} - {emoji_terminal(v['terminal'])} - {heure_lisible(v)}"
+            for v in nouvelles_approches
+        )
+        titre = "EN APPROCHE" if len(nouvelles_approches) == 1 else f"EN APPROCHE ({len(nouvelles_approches)})"
+        sections.append(f"🛬 <b>{titre}</b>\n{lignes}")
+
+    if nouveaux_poses:
+        lignes = "\n".join(
+            f"• {v['provenance']} - {v['compagnie']} - {emoji_terminal(v['terminal'])} - {v['actuel']} - {sortie_passagers(v)}"
+            for v in nouveaux_poses
+        )
+        titre = "POSÉ" if len(nouveaux_poses) == 1 else f"POSÉS ({len(nouveaux_poses)})"
+        sections.append(f"✅ <b>{titre}</b>\n{lignes}")
+
+    if nouveaux_retards:
+        lignes = "\n".join(
+            f"• {v['provenance']} - {v['compagnie']} - {emoji_terminal(v['terminal'])} - {heure_lisible(v)} (<b>+{v['retard']}min</b>)"
+            for v in nouveaux_retards
+        )
+        titre = "RETARD" if len(nouveaux_retards) == 1 else f"RETARDS ({len(nouveaux_retards)})"
+        sections.append(f"⏰ <b>{titre}</b>\n{lignes}")
+
+    if sections:
+        envoyer_telegram(encadrer_message("\n\n".join(sections)))
 
 
 # =========================
@@ -1448,12 +1489,13 @@ def envoyer_demande_nombre(chat_id, label):
 
 def texte_alerte_volee(terminal_code):
     label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
-    return (
+    corps = (
         "🚨🚨🚨 <b>ALERTE VOLÉE</b> 🚨🚨🚨\n\n"
         f"<b>BEAUCOUP DE MONDE À {label}</b>\n"
         "Besoin de renfort dès que possible !\n\n"
         f"⏱️ Expire automatiquement dans {DUREE_VOLEE_MINUTES} min si non annulée."
     )
+    return encadrer_message(corps)
 
 
 def epingler_message(chat_id, message_id):
@@ -2019,3 +2061,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
