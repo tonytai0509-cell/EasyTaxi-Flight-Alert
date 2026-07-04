@@ -114,6 +114,11 @@ alerte_watchdog_envoyee = False
 WATCHDOG_HEURE_DEBUT_SILENCE = int(os.getenv("WATCHDOG_HEURE_DEBUT_SILENCE", "1"))
 WATCHDOG_HEURE_FIN_SILENCE = int(os.getenv("WATCHDOG_HEURE_FIN_SILENCE", "5"))
 
+# ---- Watchdog API SNCF ----
+WATCHDOG_SNCF_SEUIL_ECHECS = int(os.getenv("WATCHDOG_SNCF_SEUIL_ECHECS", "3"))
+echecs_sncf_consecutifs = 0
+alerte_watchdog_sncf_envoyee = False
+
 # ---- Nettoyage quotidien des caches ----
 dernier_nettoyage = None
 
@@ -841,6 +846,24 @@ def recuperer_arrivees_sncf():
     return trains
 
 
+def _verifier_watchdog_sncf(succes):
+    """Alerte si l'API SNCF échoue plusieurs fois de suite (token expiré, API en panne, etc.)."""
+    global echecs_sncf_consecutifs, alerte_watchdog_sncf_envoyee
+    if not succes:
+        echecs_sncf_consecutifs += 1
+        logger.warning(f"Echec API SNCF ({echecs_sncf_consecutifs}/{WATCHDOG_SNCF_SEUIL_ECHECS})")
+        if echecs_sncf_consecutifs >= WATCHDOG_SNCF_SEUIL_ECHECS and not alerte_watchdog_sncf_envoyee:
+            envoyer_telegram(
+                "🚨 <b>Alerte SNCF</b>\n"
+                "L'API SNCF échoue depuis plusieurs vérifications.\n"
+                "Le module TGV est peut-être en panne (token expiré ?) — vérification manuelle recommandée."
+            )
+            alerte_watchdog_sncf_envoyee = True
+    else:
+        echecs_sncf_consecutifs = 0
+        alerte_watchdog_sncf_envoyee = False
+
+
 def mettre_a_jour_cache_trains_si_besoin(force=False):
     global trains_cache, derniere_maj_trains
 
@@ -853,8 +876,10 @@ def mettre_a_jour_cache_trains_si_besoin(force=False):
     try:
         trains_cache = recuperer_arrivees_sncf()
         derniere_maj_trains = maintenant()
+        _verifier_watchdog_sncf(True)
     except Exception as e:
         logger.warning(f"Erreur API SNCF: {e}")
+        _verifier_watchdog_sncf(False)
 
     return trains_cache
 
@@ -1399,6 +1424,10 @@ LOC_LABELS = {
 NOMBRES_RAPIDES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30]
 attente_nombre_personnalise = {}  # (chat_id, user_id) -> (terminal, mode)
 
+# ---- Auto-suppression des menus "Choisis l'emplacement" jamais utilisés ----
+MENU_TIMEOUT_SECONDES = int(os.getenv("MENU_TIMEOUT_SECONDES", "30"))
+menus_en_attente = {}  # message_id -> {"chat_id": ..., "envoye": datetime}
+
 # ---- Alerte "volée" (beaucoup de monde, plus assez de taxis) ----
 DUREE_VOLEE_MINUTES = int(os.getenv("DUREE_VOLEE_MINUTES", "25"))
 volee_active = {}  # "v1"/"v2" -> {"debut": datetime, "message_id": int}
@@ -1470,13 +1499,16 @@ def envoyer_clavier_permanent(chat_id):
 
 def envoyer_telegram_clavier(chat_id, texte, clavier):
     try:
-        requests.post(
+        r = requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
             data={"chat_id": chat_id, "text": texte, "parse_mode": "HTML", "reply_markup": json.dumps(clavier)},
             timeout=15,
         )
+        if r.ok:
+            return r.json().get("result", {}).get("message_id")
     except Exception as e:
         logger.error(f"Erreur envoi clavier Telegram: {e}")
+    return None
 
 
 def editer_message_telegram(chat_id, message_id, texte, clavier=None):
@@ -1594,6 +1626,17 @@ def verifier_expiration_volees():
         desepingler_message(TELEGRAM_CHAT_ID, info["message_id"])
 
 
+def verifier_expiration_menus():
+    """Supprime les menus 'Choisis l'emplacement' jamais utilisés après MENU_TIMEOUT_SECONDES."""
+    a_retirer = [
+        mid for mid, info in menus_en_attente.items()
+        if (maintenant() - info["envoye"]).total_seconds() >= MENU_TIMEOUT_SECONDES
+    ]
+    for mid in a_retirer:
+        info = menus_en_attente.pop(mid)
+        supprimer_message_telegram(info["chat_id"], mid)
+
+
 def traiter_callback(callback):
     """Gère les taps sur les boutons du clavier de signalement rapide."""
     data = callback.get("data", "")
@@ -1602,6 +1645,9 @@ def traiter_callback(callback):
     callback_id = callback["id"]
     qui = (callback.get("from") or {}).get("first_name", "quelqu'un")
     user_id_stats = (callback.get("from") or {}).get("id")
+
+    # Le menu a été touché : on annule sa suppression automatique programmée.
+    menus_en_attente.pop(message_id, None)
 
     if data == "loc:retour":
         repondre_callback(callback_id)
@@ -1981,7 +2027,9 @@ def traiter_commandes(vols, trains=None):
         if not texte.startswith("/"):
             if texte in ("🚖 Signaler", "🚖"):
                 supprimer_message_telegram(chat_id, message["message_id"])
-                envoyer_telegram_clavier(chat_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
+                mid = envoyer_telegram_clavier(chat_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
+                if mid:
+                    menus_en_attente[mid] = {"chat_id": chat_id, "envoye": maintenant()}
                 continue
 
             if texte.lower() in ("v1", "v2"):
@@ -2047,7 +2095,9 @@ def traiter_commandes(vols, trains=None):
         elif commande == "/top":
             repondre_telegram(chat_id, commande_top_annonces())
         elif commande in ("/signaler", "/rapide", "/v"):
-            envoyer_telegram_clavier(chat_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
+            mid = envoyer_telegram_clavier(chat_id, "🚖 Choisis l'emplacement :", clavier_emplacements())
+            if mid:
+                menus_en_attente[mid] = {"chat_id": chat_id, "envoye": maintenant()}
         elif commande in ("/aide", "/help", "/start"):
             repondre_telegram(chat_id, commande_aide())
         else:
@@ -2078,7 +2128,8 @@ def boucle_principale():
     global dernier_resume
     init_db()
     message_demarrage = (
-        "✅ <b>EasyTaxi Flight Alert V15 lancé</b>\n"
+        "🔄 <b>EasyTaxi Flight Alert redémarré</b>\n"
+        f"({maintenant().strftime('%d/%m à %H:%M')})\n\n"
         "Site aéroport gratuit + API AeroDataBox (quota géré) + commandes /aide.\n"
         f"🔌 Quota API vols : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés ce mois-ci "
         f"({quota_restant()} restants, ~{budget_journalier_calls()}/jour)."
@@ -2143,6 +2194,7 @@ def boucle_commandes():
     while True:
         try:
             traiter_commandes(vols_cache, trains_cache)
+            verifier_expiration_menus()
         except Exception as e:
             logger.error(f"Erreur boucle commandes: {e}")
             time.sleep(1)
@@ -2165,3 +2217,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
