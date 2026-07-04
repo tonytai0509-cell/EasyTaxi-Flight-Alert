@@ -1425,7 +1425,7 @@ NOMBRES_RAPIDES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30]
 attente_nombre_personnalise = {}  # (chat_id, user_id) -> (terminal, mode)
 
 # ---- Auto-suppression des menus "Choisis l'emplacement" jamais utilisés ----
-MENU_TIMEOUT_SECONDES = int(os.getenv("MENU_TIMEOUT_SECONDES", "10"))
+MENU_TIMEOUT_SECONDES = int(os.getenv("MENU_TIMEOUT_SECONDES", "30"))
 menus_en_attente = {}  # message_id -> {"chat_id": ..., "envoye": datetime}
 
 # ---- Alerte "volée" (beaucoup de monde, plus assez de taxis) ----
@@ -1468,8 +1468,6 @@ def clavier_nombres(loc):
         lignes.append(ligne)
     if loc == "t2_lineaire":
         lignes.append([{"text": "A4 (½ parking)", "callback_data": f"cnt:{loc}:A4"}])
-    if loc == "t1_babel":
-        lignes.append([{"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
     lignes.append([{"text": "✏️ Autre nombre", "callback_data": f"custom:{loc}"}])
     lignes.append([{"text": "⬅️ Retour", "callback_data": "loc:retour"}])
     return {"inline_keyboard": lignes}
@@ -1707,8 +1705,8 @@ def traiter_callback(callback):
 
     if data.startswith("cnt:"):
         _, loc, nombre_str = data.split(":", 2)
-        if nombre_str in ("A4", "FULL"):
-            nombre = nombre_str
+        if nombre_str == "A4":
+            nombre = "A4"
         else:
             try:
                 nombre = int(nombre_str)
@@ -1722,8 +1720,6 @@ def traiter_callback(callback):
             repondre_callback(callback_id, "Enregistré ✅")
             if nombre == "A4":
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>A4</b> (½ parking)"
-            elif nombre == "FULL":
-                texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>FULL</b> (Babel plein)"
             else:
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures"
             texte_confirmation += f"\n<i>Signalé par {qui}</i>"
@@ -2221,4 +2217,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
