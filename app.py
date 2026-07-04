@@ -2078,33 +2078,36 @@ def traiter_commandes(vols, trains=None):
                     repondre_telegram(chat_id, "Envoie juste un nombre, ex: 12")
                 continue
 
-            # 'Ça tire T1/T2' : signale un rythme soutenu, sans nombre précis.
-            terminal_tire = detecter_ca_tire(texte)
-            if terminal_tire:
-                qui = (message.get("from") or {}).get("first_name", "quelqu'un")
-                definir_position(terminal_tire, "TIRE", None, qui)
-                label = "Terminal 1" if terminal_tire == "t1" else "Terminal 2"
-                supprimer_message_telegram(chat_id, message["message_id"])
-                repondre_telegram(
-                    chat_id,
-                    f"🟧 ⚡ <b>Rythme soutenu signalé à {label}</b>\n"
-                    "Ça commence à tirer, restez prêts !\n"
-                    f"<i>Signalé par {qui}</i>"
-                )
-                continue
+            # 'Ça tire T1/T2' et signalement voitures : uniquement sur des messages courts,
+            # pour éviter qu'un message long (annonce, discussion...) soit mal interprété
+            # juste parce qu'il contient incidemment ces mots-clés.
+            if len(texte) <= 40:
+                terminal_tire = detecter_ca_tire(texte)
+                if terminal_tire:
+                    qui = (message.get("from") or {}).get("first_name", "quelqu'un")
+                    definir_position(terminal_tire, "TIRE", None, qui)
+                    label = "Terminal 1" if terminal_tire == "t1" else "Terminal 2"
+                    supprimer_message_telegram(chat_id, message["message_id"])
+                    repondre_telegram(
+                        chat_id,
+                        f"🟧 ⚡ <b>Rythme soutenu signalé à {label}</b>\n"
+                        "Ça commence à tirer, restez prêts !\n"
+                        f"<i>Signalé par {qui}</i>"
+                    )
+                    continue
 
-            # Message libre : on tente de le lire comme un signalement de voitures
-            resultat = parser_position(texte)
-            if resultat == "ambigu":
-                repondre_telegram(chat_id, "Précise le terminal : par exemple '3 linéaire t1' ou '3 linéaire t2'.")
-            elif resultat:
-                terminal, nombre, mode = resultat
-                qui = (message.get("from") or {}).get("first_name", "quelqu'un")
-                definir_position(terminal, nombre, mode, qui)
-                # Pas de comptage au classement /top pour le texte libre (moins fiable),
-                # seuls les boutons et le chiffre personnalisé comptent.
-                supprimer_message_telegram(chat_id, message["message_id"])
-                repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
+                # Message libre : on tente de le lire comme un signalement de voitures
+                resultat = parser_position(texte)
+                if resultat == "ambigu":
+                    repondre_telegram(chat_id, "Précise le terminal : par exemple '3 linéaire t1' ou '3 linéaire t2'.")
+                elif resultat:
+                    terminal, nombre, mode = resultat
+                    qui = (message.get("from") or {}).get("first_name", "quelqu'un")
+                    definir_position(terminal, nombre, mode, qui)
+                    # Pas de comptage au classement /top pour le texte libre (moins fiable),
+                    # seuls les boutons et le chiffre personnalisé comptent.
+                    supprimer_message_telegram(chat_id, message["message_id"])
+                    repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
             continue
 
         partie = texte.split()
