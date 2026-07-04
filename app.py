@@ -2052,6 +2052,7 @@ def traiter_commandes(vols, trains=None):
             if texte.lower() in ("v1", "v2"):
                 terminal_code = texte.lower()
                 label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
+                supprimer_message_telegram(chat_id, message["message_id"])
                 envoyer_telegram_clavier(
                     chat_id,
                     f"⚠️ Confirmer l'alerte VOLÉE {label} ? Tout le monde va être prévenu.",
@@ -2083,6 +2084,7 @@ def traiter_commandes(vols, trains=None):
                 qui = (message.get("from") or {}).get("first_name", "quelqu'un")
                 definir_position(terminal_tire, "TIRE", None, qui)
                 label = "Terminal 1" if terminal_tire == "t1" else "Terminal 2"
+                supprimer_message_telegram(chat_id, message["message_id"])
                 repondre_telegram(
                     chat_id,
                     f"🟧 ⚡ <b>Rythme soutenu signalé à {label}</b>\n"
@@ -2101,6 +2103,7 @@ def traiter_commandes(vols, trains=None):
                 definir_position(terminal, nombre, mode, qui)
                 # Pas de comptage au classement /top pour le texte libre (moins fiable),
                 # seuls les boutons et le chiffre personnalisé comptent.
+                supprimer_message_telegram(chat_id, message["message_id"])
                 repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
             continue
 
