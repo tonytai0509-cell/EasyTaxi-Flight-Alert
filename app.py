@@ -1496,7 +1496,7 @@ def envoyer_demande_nombre(chat_id, label):
     return None
 
 
-def texte_alerte_volee(terminal_code):
+def texte_alerte_volee(terminal_code, qui=None):
     label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
     corps = (
         "🚨🚨🚨 <b>ALERTE VOLÉE</b> 🚨🚨🚨\n\n"
@@ -1504,6 +1504,8 @@ def texte_alerte_volee(terminal_code):
         "Besoin de renfort dès que possible !\n\n"
         f"⏱️ Expire automatiquement dans {DUREE_VOLEE_MINUTES} min si non annulée."
     )
+    if qui:
+        corps += f"\n<i>Déclenché par {qui}</i>"
     return encadrer_message(corps)
 
 
@@ -1529,14 +1531,14 @@ def desepingler_message(chat_id, message_id):
         logger.error(f"Erreur désépinglage message: {e}")
 
 
-def envoyer_alerte_volee(chat_id, terminal_code):
+def envoyer_alerte_volee(chat_id, terminal_code, qui=None):
     """Envoie le message d'alerte voyant, épinglé, avec un bouton pour l'annuler manuellement."""
     try:
         r = requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
             data={
                 "chat_id": chat_id,
-                "text": texte_alerte_volee(terminal_code),
+                "text": texte_alerte_volee(terminal_code, qui),
                 "parse_mode": "HTML",
                 "disable_notification": False,  # notification normale, pas silencieuse
                 "reply_markup": json.dumps(clavier_annulation_volee(terminal_code)),
@@ -1604,7 +1606,7 @@ def traiter_callback(callback):
             return
         repondre_callback(callback_id, "Alerte envoyée")
         supprimer_message_telegram(chat_id, message_id)
-        nouveau_message_id = envoyer_alerte_volee(chat_id, terminal_code)
+        nouveau_message_id = envoyer_alerte_volee(chat_id, terminal_code, qui)
         if nouveau_message_id:
             volee_active[terminal_code] = {"debut": maintenant(), "message_id": nouveau_message_id}
         return
@@ -1648,6 +1650,7 @@ def traiter_callback(callback):
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>A4</b> (½ parking)"
             else:
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures"
+            texte_confirmation += f"\n<i>Signalé par {qui}</i>"
             editer_message_telegram(chat_id, message_id, texte_confirmation)
         else:
             repondre_callback(callback_id)
@@ -1917,7 +1920,7 @@ def traiter_commandes(vols, trains=None):
                     supprimer_message_telegram(chat_id, message["message_id"])  # leur nombre tapé
                     if prompt_id:
                         supprimer_message_telegram(chat_id, prompt_id)  # la question posée
-                    repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures")
+                    repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
                 else:
                     repondre_telegram(chat_id, "Envoie juste un nombre, ex: 12")
                 continue
@@ -1930,7 +1933,7 @@ def traiter_commandes(vols, trains=None):
                 terminal, nombre, mode = resultat
                 qui = (message.get("from") or {}).get("first_name", "quelqu'un")
                 definir_position(terminal, nombre, mode, qui)
-                repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures")
+                repondre_telegram(chat_id, f"✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
             continue
 
         partie = texte.split()
@@ -2070,4 +2073,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
