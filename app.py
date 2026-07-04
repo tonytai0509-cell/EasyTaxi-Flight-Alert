@@ -7,6 +7,7 @@ import logging
 import logging.handlers
 import sqlite3
 import threading
+import unicodedata
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
@@ -609,10 +610,33 @@ def recuperer_arrivees_aerodatabox():
     return dedoublonner_vols(vols)
 
 
+LETTRES_SPECIALES = {
+    "Ł": "L", "ł": "l",
+    "Đ": "D", "đ": "d",
+    "Ø": "O", "ø": "o",
+    "Æ": "AE", "æ": "ae",
+    "Þ": "TH", "þ": "th",
+    "ß": "ss",
+}
+
+
+def normaliser_pour_comparaison(texte):
+    """Retire les accents pour comparer deux noms de ville, même s'ils viennent
+    de sources différentes qui les orthographient différemment
+    (ex: WROCŁAW vs WROCLAW, GDAŃSK vs GDANSK)."""
+    texte = texte or ""
+    for lettre, remplacement in LETTRES_SPECIALES.items():
+        texte = texte.replace(lettre, remplacement)
+    texte = unicodedata.normalize("NFKD", texte)
+    texte = "".join(c for c in texte if not unicodedata.combining(c))
+    return texte.upper().strip()
+
+
 def dedoublonner_vols(vols):
     uniques = {}
     for v in vols:
-        cle = f"{v.get('actuel')}-{v.get('provenance')}-{v.get('terminal')}"
+        ville_normalisee = normaliser_pour_comparaison(v.get("provenance"))
+        cle = f"{v.get('actuel')}-{ville_normalisee}-{v.get('terminal')}"
         if cle not in uniques:
             uniques[cle] = v
         else:
@@ -645,7 +669,7 @@ def fusionner_site_api(vols_site, vols_api):
                 continue
             if api["terminal"] != site["terminal"]:
                 continue
-            if api["provenance"] != site["provenance"]:
+            if normaliser_pour_comparaison(api["provenance"]) != normaliser_pour_comparaison(site["provenance"]):
                 continue
             if api["dt_actuel"] and site["dt_actuel"]:
                 diff = abs((api["dt_actuel"] - site["dt_actuel"]).total_seconds()) / 60
@@ -1106,15 +1130,17 @@ def nettoyer_caches_si_besoin():
     logger.info("Nettoyage quotidien des caches effectué.")
 
 
+SEPARATEUR_RESUME = "━" * 16
+
+
 def niveau_affluence(nb30):
-    if nb30 >= 8: return "🔴 Forte"
-    if nb30 >= 4: return "🟠 Moyenne"
-    return "🟢 Calme"
+    if nb30 >= 8: return ("Forte", "🔴")
+    if nb30 >= 4: return ("Moyenne", "🟠")
+    return ("Calme", "🟢")
 
 
 def icone_statut_court(v):
     status = v.get("site_status") or v.get("live_status") or v.get("status") or ""
-    retard = v.get("retard", 0)
 
     if est_pose(status):
         return "✅"
@@ -1124,31 +1150,36 @@ def icone_statut_court(v):
         return "✈️"
     if "cancel" in status.lower() or "annul" in status.lower():
         return "❌"
+    retard = v.get("retard", 0)
     if retard >= RETARD_IMPORTANT_MINUTES:
-        return f"⏰ +{retard} min"
+        return "⏰"
     if retard >= 10:
-        return f"🟡 +{retard} min"
+        return "🟡"
     return "🟢"
 
 
 def ligne_vol(v):
     heure = heure_lisible(v)
     ville = html.escape((v['provenance'] or "")[:18])
-    return f"• {heure} {ville} {icone_statut_court(v)}"
+    ligne = f"{icone_statut_court(v)} {heure} {ville}"
+    retard = v.get("retard", 0)
+    if retard >= 10:
+        ligne += f" +{retard} min"
+    return ligne
 
 
 def bloc_terminal(titre, vols):
     if not vols:
         return f"{titre} (0)\n"
     corps = "\n".join(ligne_vol(v) for v in vols)
-    return f"{titre} ({len(vols)})\n{corps}\n"
+    return f"{titre} ({len(vols)})\n\n{corps}\n"
 
 
 def bloc_trains(trains):
     if not trains:
         return ""
     corps = "\n".join(ligne_train(t) for t in trains[:8])
-    return f"\n🚄 <b>Prochains TGV (30min)</b> : {len(trains)}\n<code>{corps}</code>\n"
+    return f"🚄 <b>TGV (30 min)</b>\n\n<code>{corps}</code>\n"
 
 
 def creer_resume(vols, trains=None):
@@ -1159,24 +1190,24 @@ def creer_resume(vols, trains=None):
     approches = [v for v in d30 if est_approche(v.get("site_status") or v.get("live_status") or v.get("status"))]
     poses = [v for v in d30 if est_pose(v.get("site_status") or v.get("live_status") or v.get("status"))]
     retards = [v for v in d60 if v["retard"] >= RETARD_IMPORTANT_MINUTES and not est_arrive_ou_approche(v.get("site_status") or v.get("live_status") or v.get("status"))]
+    label_affluence, emoji_affluence = niveau_affluence(len(d30))
 
-    msg = (
-        "✈️ <b>EASYTAXI FLIGHT ALERT</b>\n"
-        f"🕒 {maintenant().strftime('%H:%M')} | 🚖 {niveau_affluence(len(d30))} | ⚠️ {len(retards)}\n"
-        f"🛬 Approche : {len(approches)} | ✅ Posés : {len(poses)}\n\n"
-        f"<b>🟢 À poser dans 30 min : {len(d30)} vols</b>\n"
-        f"🟣 À poser dans 1h : {len(d60)} vols\n\n"
-        "✈️ <b>Arrivées - 30 min</b>\n"
-        "<i>🟢 prévu · 🟡/⏰ retard · 🛬 approche · ✅ posé</i>\n"
-    )
-    msg += bloc_terminal("🔵 Terminal 1", t1_30)
-    msg += bloc_terminal("🟣 Terminal 2", t2_30)
+    blocs = [
+        f"✈️ <b>EASYTAXI FLIGHT ALERT</b>\n🕒 {maintenant().strftime('%H:%M')}",
+        f"🚖 {label_affluence} demande {emoji_affluence} ({len(retards)})",
+        f"✈️ En approche : {len(approches)}\n✅ Posés : {len(poses)}",
+        f"<b>🟢 Dans 30 min : {len(d30)} vols</b>\n🟣 Dans 1 h : {len(d60)} vols",
+        bloc_terminal("🔵 T1", t1_30).strip(),
+        bloc_terminal("🟣 T2", t2_30).strip(),
+    ]
 
     if trains:
         trains_30 = trains_dans_minutes(trains, 30)
-        msg += bloc_trains(trains_30)
+        bloc = bloc_trains(trains_30)
+        if bloc:
+            blocs.append(bloc.strip())
 
-    return msg.strip()
+    return f"\n{SEPARATEUR_RESUME}\n\n".join(blocs)
 
 
 def initialiser_sans_spam(vols):
@@ -1884,13 +1915,26 @@ def parser_position(texte):
         return (terminal or "t1", nombre, "reserve")
     if "parking" in t or "pk" in t:
         return (terminal or "t2", nombre, "parking")
-    if "lineaire" in t or "linéaire" in t:
+    if "lineaire" in t or "linéaire" in t or "podium" in t:
         if terminal is None:
             return "ambigu"
         return (terminal, nombre, "lineaire")
     if terminal is not None:
         return (terminal, nombre, None)
     return None
+
+
+def detecter_format_court_lineaire(texte):
+    """Détecte les formats compacts comme '3vt2', '2vt1' (nombre+v+t+terminal collés),
+    toujours interprétés comme linéaire. Nécessite une correspondance EXACTE du message
+    entier (pas juste une sous-chaîne), pour ne jamais se déclencher dans une longue phrase."""
+    t = texte.lower().strip()
+    m = re.fullmatch(r"(\d+)\s*v\s*t\s*([12])", t)
+    if not m:
+        return None
+    nombre = int(m.group(1))
+    terminal = f"t{m.group(2)}"
+    return (terminal, nombre, "lineaire")
 
 
 def detecter_ca_tire(texte):
@@ -2104,7 +2148,7 @@ def traiter_commandes(vols, trains=None):
                     continue
 
                 # Message libre : on tente de le lire comme un signalement de voitures
-                resultat = parser_position(texte)
+                resultat = detecter_format_court_lineaire(texte) or parser_position(texte)
                 if resultat == "ambigu":
                     repondre_telegram(chat_id, "Précise le terminal : par exemple '3 linéaire t1' ou '3 linéaire t2'.")
                 elif resultat:
