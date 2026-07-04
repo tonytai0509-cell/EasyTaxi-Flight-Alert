@@ -520,6 +520,12 @@ def mettre_a_jour_cache_si_besoin(force=False):
             nb_t1 = sum(1 for v in vols_cache if v.get("terminal") == "1")
             nb_t2 = sum(1 for v in vols_cache if v.get("terminal") == "2")
             logger.info(f"Scraping site: {len(vols_cache)} vols trouvés (T1={nb_t1}, T2={nb_t2})")
+            for v in vols_cache:
+                logger.info(
+                    f"  DETAIL vol: terminal={v.get('terminal')!r} ville={v.get('provenance')!r} "
+                    f"heure={v.get('prevu')!r} actuel={v.get('actuel')!r} "
+                    f"dt_actuel={v.get('dt_actuel')!r} statut={v.get('site_status')!r}"
+                )
         except Exception as e:
             logger.warning(f"Erreur site aéroport: {e}")
 
