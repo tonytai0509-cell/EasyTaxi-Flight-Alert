@@ -35,9 +35,6 @@ logger = logging.getLogger("easytaxi")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "aerodatabox.p.rapidapi.com")
-AEROPORT_IATA = "NCE"
 PARIS = ZoneInfo("Europe/Paris")
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -45,23 +42,8 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
 
 URL_SITE_AEROPORT = "https://www.nice.aeroport.fr/en/flights/arrivals"
 
-# Site officiel = gratuit, on peut vérifier souvent
+# Site officiel de l'aéroport = gratuit, seule source utilisée pour les vols
 FREQUENCE_SITE_SECONDES = 60
-
-# API AeroDataBox = payante et quotée, on vérifie moins souvent et seulement les vols prioritaires
-FREQUENCE_API_LISTE_SECONDES = int(os.getenv("FREQUENCE_API_LISTE_SECONDES", "1800"))  # 30 min par défaut
-MAX_LIVE_CALLS_PAR_CYCLE = int(os.getenv("MAX_LIVE_CALLS_PAR_CYCLE", "2"))
-FENETRE_LIVE_MINUTES = int(os.getenv("FENETRE_LIVE_MINUTES", "35"))
-
-# ---- Quota API mensuel (garde-fou dur, indépendant des fréquences ci-dessus) ----
-QUOTA_API_MENSUEL = int(os.getenv("QUOTA_API_MENSUEL", "5800"))
-QUOTA_MARGE_SECURITE = int(os.getenv("QUOTA_MARGE_SECURITE", "150"))  # on s'arrête avant la vraie limite
-QUOTA_FICHIER = os.getenv("QUOTA_FICHIER", "quota_api.json")
-QUOTA_SEUIL_ALERTE = 0.9  # avertir Telegram quand 90% du quota est consommé
-quota_alerte_envoyee = False
-
-# ---- Plafond journalier strict (en plus du mensuel, ne dépend pas du budget adaptatif) ----
-QUOTA_JOUR_MAX = int(os.getenv("QUOTA_JOUR_MAX", "190"))
 
 FREQUENCE_RESUME_SECONDES = 1800
 RETARD_IMPORTANT_MINUTES = 20
@@ -128,11 +110,7 @@ annules_deja_annonces = set()
 
 vols_cache = []
 derniere_maj_site = None
-derniere_maj_api = None
 dernier_resume = None
-
-live_status_cache = {}
-LIVE_CACHE_MINUTES = 15
 
 approches_deja_annoncees = set()
 poses_deja_annonces = set()
@@ -295,92 +273,6 @@ def envoyer_telegram(message):
             logger.error(f"Erreur Telegram: {r.text}")
     except Exception as e:
         logger.error(f"Erreur Telegram: {e}")
-
-
-# =========================
-# QUOTA API MENSUEL (garde-fou dur)
-# =========================
-
-def _charger_quota():
-    try:
-        with open(QUOTA_FICHIER, "r") as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-    mois_actuel = maintenant().strftime("%Y-%m")
-    jour_actuel = maintenant().strftime("%Y-%m-%d")
-    if data.get("mois") != mois_actuel:
-        data = {"mois": mois_actuel, "compteur": 0, "jour": jour_actuel, "compteur_jour": 0}
-    if data.get("jour") != jour_actuel:
-        data["jour"] = jour_actuel
-        data["compteur_jour"] = 0
-    return data
-
-
-def _sauver_quota(data):
-    try:
-        with open(QUOTA_FICHIER, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        logger.error(f"Erreur sauvegarde quota: {e}")
-
-
-def quota_restant():
-    data = _charger_quota()
-    return max(0, QUOTA_API_MENSUEL - data["compteur"])
-
-
-def quota_utilise():
-    return _charger_quota()["compteur"]
-
-
-def quota_jour_utilise():
-    return _charger_quota().get("compteur_jour", 0)
-
-
-def quota_jour_restant():
-    return max(0, QUOTA_JOUR_MAX - quota_jour_utilise())
-
-
-def api_disponible(cout=1):
-    """Vérifie qu'on peut encore consommer `cout` appels : à la fois le plafond
-    journalier strict ET le plafond mensuel avec marge de sécurité."""
-    if quota_jour_restant() < cout:
-        return False
-    return quota_restant() >= cout + QUOTA_MARGE_SECURITE
-
-
-def consommer_quota(cout=1):
-    global quota_alerte_envoyee
-    data = _charger_quota()
-    data["compteur"] += cout
-    data["compteur_jour"] = data.get("compteur_jour", 0) + cout
-    _sauver_quota(data)
-
-    ratio = data["compteur"] / QUOTA_API_MENSUEL
-    if ratio >= QUOTA_SEUIL_ALERTE and not quota_alerte_envoyee:
-        envoyer_telegram(
-            "⚠️ <b>Quota API bientôt atteint</b>\n"
-            f"{data['compteur']}/{QUOTA_API_MENSUEL} appels utilisés ce mois-ci.\n"
-            "Le bot va basculer sur le site aéroport uniquement jusqu'au mois prochain."
-        )
-        quota_alerte_envoyee = True
-
-
-def jours_restants_mois():
-    now = maintenant()
-    if now.month == 12:
-        prochain = now.replace(year=now.year + 1, month=1, day=1)
-    else:
-        prochain = now.replace(month=now.month + 1, day=1)
-    return max(1, (prochain.date() - now.date()).days)
-
-
-def budget_journalier_calls():
-    """Nombre d'appels API qu'on peut encore se permettre par jour jusqu'à la fin du mois."""
-    return max(0, quota_restant() // jours_restants_mois())
-
-
 
 
 def recuperer_site_aeroport():
@@ -547,69 +439,6 @@ def minutes_retard(prevu, actuel):
 # AERODATABOX
 # =========================
 
-def recuperer_arrivees_aerodatabox():
-    if not RAPIDAPI_KEY:
-        raise Exception("Clé RapidAPI absente")
-    if not api_disponible(1):
-        raise Exception(f"Quota API mensuel atteint ({quota_utilise()}/{QUOTA_API_MENSUEL}), passage en mode site uniquement")
-
-    debut = maintenant() - timedelta(minutes=15)
-    fin = maintenant() + timedelta(hours=2)
-    url = f"https://{RAPIDAPI_HOST}/flights/airports/iata/{AEROPORT_IATA}/{debut.strftime('%Y-%m-%dT%H:%M')}/{fin.strftime('%Y-%m-%dT%H:%M')}"
-
-    params = {
-        "withLeg": "true",
-        "direction": "Arrival",
-        "withCancelled": "true",
-        "withCodeshared": "true",
-        "withCargo": "false",
-        "withPrivate": "false",
-    }
-    headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": RAPIDAPI_HOST}
-
-    r = requests.get(url, headers=headers, params=params, timeout=25)
-    consommer_quota(1)
-    if not r.ok:
-        raise Exception(f"AeroDataBox {r.status_code}: {r.text[:250]}")
-
-    vols = []
-    for item in r.json().get("arrivals", []):
-        arrival = item.get("arrival", {}) or {}
-        departure = item.get("departure", {}) or {}
-        airline = item.get("airline", {}) or {}
-        dep_airport = departure.get("airport", {}) or {}
-
-        scheduled = arrival.get("scheduledTime", {}) or {}
-        revised = arrival.get("revisedTime", {}) or {}
-        actual = arrival.get("actualTime", {}) or {}
-        predicted = arrival.get("predictedTime", {}) or {}
-
-        dt_prevu = parse_iso(scheduled.get("local"))
-        dt_actuel = parse_iso(actual.get("local")) or parse_iso(revised.get("local")) or parse_iso(predicted.get("local")) or dt_prevu
-
-        retard = 0
-        if dt_prevu and dt_actuel:
-            retard = max(0, int((dt_actuel - dt_prevu).total_seconds() // 60))
-
-        vols.append({
-            "numero": item.get("number") or item.get("callSign") or "N/A",
-            "compagnie": nettoyer_compagnie(airline.get("name") or "N/A"),
-            "provenance": nettoyer_nom(dep_airport.get("municipalityName") or dep_airport.get("name") or dep_airport.get("iata") or "INCONNUE"),
-            "terminal": str(arrival.get("terminal") or ""),
-            "status": item.get("status") or arrival.get("status") or "Expected",
-            "live_status": None,
-            "site_status": None,
-            "dt_prevu": dt_prevu,
-            "dt_actuel": dt_actuel,
-            "prevu": hhmm(dt_prevu),
-            "actuel": hhmm(dt_actuel),
-            "retard": retard,
-            "source": "api"
-        })
-
-    return dedoublonner_vols(vols)
-
-
 LETTRES_SPECIALES = {
     "Ł": "L", "ł": "l",
     "Đ": "D", "đ": "d",
@@ -652,49 +481,6 @@ def dedoublonner_vols(vols):
     return resultat
 
 
-def fusionner_site_api(vols_site, vols_api):
-    """
-    Le site est gratuit et peut donner Approche/Arrived.
-    L'API donne mieux les noms/numéros/terminaux.
-    On fusionne par terminal + ville + heure proche.
-    """
-    resultats = []
-    utilises_site = set()
-
-    for api in vols_api:
-        meilleur = None
-        meilleur_idx = None
-        for i, site in enumerate(vols_site):
-            if i in utilises_site:
-                continue
-            if api["terminal"] != site["terminal"]:
-                continue
-            if normaliser_pour_comparaison(api["provenance"]) != normaliser_pour_comparaison(site["provenance"]):
-                continue
-            if api["dt_actuel"] and site["dt_actuel"]:
-                diff = abs((api["dt_actuel"] - site["dt_actuel"]).total_seconds()) / 60
-                if diff <= 20:
-                    meilleur = site
-                    meilleur_idx = i
-                    break
-
-        if meilleur:
-            api["site_status"] = meilleur.get("site_status")
-            if meilleur.get("retard", 0) > api.get("retard", 0):
-                api["retard"] = meilleur["retard"]
-                api["actuel"] = meilleur["actuel"]
-                api["dt_actuel"] = meilleur["dt_actuel"]
-            utilises_site.add(meilleur_idx)
-
-        resultats.append(api)
-
-    for i, site in enumerate(vols_site):
-        if i not in utilises_site:
-            resultats.append(site)
-
-    return dedoublonner_vols(resultats)
-
-
 def _en_heures_creuses():
     heure = maintenant().hour
     return WATCHDOG_HEURE_DEBUT_SILENCE <= heure < WATCHDOG_HEURE_FIN_SILENCE
@@ -723,37 +509,16 @@ def _verifier_watchdog_site(vols_site):
 
 
 def mettre_a_jour_cache_si_besoin(force=False):
-    global vols_cache, derniere_maj_site, derniere_maj_api
+    """Récupère les vols depuis le site officiel de l'aéroport (gratuit) — seule source."""
+    global vols_cache, derniere_maj_site
 
-    vols_site = None
     if force or derniere_maj_site is None or (maintenant() - derniere_maj_site).total_seconds() >= FREQUENCE_SITE_SECONDES:
         try:
-            vols_site = recuperer_vols_site()
+            vols_cache = recuperer_vols_site()
             derniere_maj_site = maintenant()
-            _verifier_watchdog_site(vols_site)
+            _verifier_watchdog_site(vols_cache)
         except Exception as e:
             logger.warning(f"Erreur site aéroport: {e}")
-
-    vols_api = None
-    if force or derniere_maj_api is None or (maintenant() - derniere_maj_api).total_seconds() >= FREQUENCE_API_LISTE_SECONDES:
-        try:
-            vols_api = recuperer_arrivees_aerodatabox()
-            derniere_maj_api = maintenant()
-        except Exception as e:
-            logger.warning(f"Erreur API liste: {e}")
-
-    if vols_site is None and vols_api is None:
-        return vols_cache
-
-    if vols_site is None:
-        vols_site = [v for v in vols_cache if v.get("source") == "site"]
-    if vols_api is None:
-        vols_api = [v for v in vols_cache if v.get("source") == "api"]
-
-    if vols_api:
-        vols_cache = fusionner_site_api(vols_site or [], vols_api)
-    else:
-        vols_cache = vols_site or vols_cache
 
     return vols_cache
 
@@ -1010,89 +775,10 @@ def envoyer_alertes_trains(trains):
         envoyer_telegram(encadrer_message("\n\n".join(sections)))
 
 
-# =========================
-# LIVE STATUS API PRIORITAIRE
-# =========================
-
-def score_gros_vol(v):
-    score = 0
-    ville = (v.get("provenance") or "").upper()
-    compagnie = (v.get("compagnie") or "").upper()
-    gros_hubs = ["PARIS", "LONDRES", "FRANCFORT", "AMSTERDAM", "GENÈVE", "ZURICH", "CASABLANCA", "ISTANBUL", "DUBAI", "DOHA", "COPENHAGUE"]
-    grosses_compagnies = ["AIR FRANCE", "BRITISH", "LUFTHANSA", "KLM", "SWISS", "EMIRATES", "QATAR", "TURKISH", "EASYJET", "TRANSAVIA", "SAS", "NORWEGIAN", "RAM"]
-    if any(h in ville for h in gros_hubs):
-        score += 50
-    if any(c in compagnie for c in grosses_compagnies):
-        score += 25
-    if str(v.get("terminal")) == "2":
-        score += 10
-    dt = v.get("dt_actuel") or v.get("dt_prevu")
-    if dt:
-        mins = (dt.astimezone(PARIS) - maintenant()).total_seconds() / 60
-        if 0 <= mins <= 10: score += 40
-        elif mins <= 20: score += 30
-        elif mins <= 35: score += 15
-    return score
-
-
-def recuperer_live_status(numero):
-    if not numero or numero == "N/A":
-        return None
-    cached = live_status_cache.get(numero)
-    if cached and (maintenant() - cached["time"]).total_seconds() < 15 * 60:
-        return cached["status"]
-
-    if not api_disponible(1):
-        return None
-
-    url = f"https://{RAPIDAPI_HOST}/flights/number/{numero}"
-    headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": RAPIDAPI_HOST}
-    try:
-        r = requests.get(url, headers=headers, timeout=20)
-        consommer_quota(1)
-        if not r.ok:
-            return None
-        data = r.json()
-        if not isinstance(data, list) or not data:
-            return None
-        choisi = None
-        for item in data:
-            airport = ((item.get("arrival") or {}).get("airport") or {})
-            if airport.get("iata") == AEROPORT_IATA:
-                choisi = item
-                break
-        choisi = choisi or data[0]
-        status = choisi.get("status")
-        live_status_cache[numero] = {"status": status, "time": maintenant()}
-        return status
-    except Exception:
-        return None
-
-
 def vols_dans_minutes(vols, minutes):
     now = maintenant()
     limite = now + timedelta(minutes=minutes)
     return [v for v in vols if v.get("dt_actuel") and now <= v["dt_actuel"].astimezone(PARIS) <= limite]
-
-
-def enrichir_live_status(vols):
-    candidats = vols_dans_minutes(vols, FENETRE_LIVE_MINUTES)
-    candidats = [v for v in candidats if not est_arrive_ou_approche(v.get("site_status"))]
-    candidats.sort(key=lambda v: (-score_gros_vol(v), v.get("dt_actuel") or v.get("dt_prevu") or maintenant()))
-
-    limite_cycle = min(MAX_LIVE_CALLS_PAR_CYCLE, budget_journalier_calls())
-
-    appels = 0
-    for v in candidats:
-        if appels >= limite_cycle:
-            break
-        if not api_disponible(1):
-            break
-        status = recuperer_live_status(v["numero"])
-        appels += 1
-        if status:
-            v["live_status"] = status
-    return vols
 
 
 # =========================
@@ -1121,21 +807,62 @@ def nettoyer_caches_si_besoin():
     for k in obsoletes_origine:
         del origine_cache[k]
 
-    expiration = maintenant() - timedelta(hours=6)
-    obsoletes = [k for k, v in live_status_cache.items() if v["time"] < expiration]
-    for k in obsoletes:
-        del live_status_cache[k]
-
     dernier_nettoyage = aujourdhui
     logger.info("Nettoyage quotidien des caches effectué.")
 
 
 SEPARATEUR_RESUME = "━" * 16
+MIN_JOURS_HISTORIQUE = 3  # nombre minimum de jours similaires en historique avant de faire confiance à la moyenne
+
+
+def niveau_affluence_fixe(nb30):
+    """Seuils fixes, utilisés en repli si pas assez d'historique pour comparer intelligemment."""
+    if nb30 >= 8: return ("Forte", "🔴")
+    if nb30 >= 4: return ("Moyenne", "🟠")
+    return ("Calme", "🟢")
 
 
 def niveau_affluence(nb30):
-    if nb30 >= 8: return ("Forte", "🔴")
-    if nb30 >= 4: return ("Moyenne", "🟠")
+    """Compare le trafic actuel à la moyenne historique pour le MÊME jour de la semaine
+    et la MÊME tranche horaire (ex: samedi 15h vs les samedis précédents à 15h),
+    plutôt qu'à un seuil fixe qui ne distingue pas un samedi calme d'un mardi chargé.
+    Retombe sur les seuils fixes si l'historique est encore trop pauvre."""
+    try:
+        maintenant_dt = maintenant()
+        jour_semaine = maintenant_dt.strftime("%w")  # 0=dimanche ... 6=samedi
+        heure = maintenant_dt.hour
+        debut_heure = f"{max(0, heure - 1):02d}:00"
+        fin_heure = f"{min(23, heure + 1):02d}:59"
+        aujourdhui = maintenant_dt.strftime("%Y-%m-%d")
+
+        conn = sqlite3.connect(DB_FICHIER)
+        rows = conn.execute(
+            """
+            SELECT date, COUNT(*) FROM vols_historique
+            WHERE strftime('%w', date) = ?
+              AND heure_reelle BETWEEN ? AND ?
+              AND date != ?
+            GROUP BY date
+            """,
+            (jour_semaine, debut_heure, fin_heure, aujourdhui),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Erreur calcul affluence historique: {e}")
+        rows = []
+
+    if len(rows) < MIN_JOURS_HISTORIQUE:
+        return niveau_affluence_fixe(nb30)
+
+    moyenne = sum(r[1] for r in rows) / len(rows)
+    if moyenne <= 0:
+        return niveau_affluence_fixe(nb30)
+
+    ratio = nb30 / moyenne
+    if ratio >= 1.5:
+        return ("Forte", "🔴")
+    if ratio >= 0.8:
+        return ("Moyenne", "🟠")
     return ("Calme", "🟢")
 
 
@@ -1818,17 +1545,7 @@ def commande_vol(vols, numero):
                 f"De {v['provenance']} · {emoji_terminal(v['terminal'])}\n"
                 f"{heure_lisible(v)} · {statut_lisible(v)}"
             )
-    return (
-        f"Vol {numero} introuvable dans les données actuelles.\n"
-        "<i>Pas de recherche API déclenchée pour préserver le quota.</i>"
-    )
-
-
-def commande_quota():
-    return (
-        f"🔌 Quota API mensuel : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés, {quota_restant()} restants.\n"
-        f"📅 Aujourd'hui : {quota_jour_utilise()}/{QUOTA_JOUR_MAX} utilisés, {quota_jour_restant()} restants."
-    )
+    return f"Vol {numero} introuvable dans les données actuelles."
 
 
 def commande_tgv(trains):
@@ -2057,7 +1774,6 @@ def commande_aide():
         "/t2 — vols Terminal 2 (1h)\n"
         "/vol NUMERO — chercher un vol précis\n"
         "/tgv — prochains TGV à Nice-Ville (1h)\n"
-        "/quota — quota API restant\n"
         "/etat — voitures aux terminaux\n"
         "/top — top 5 des annonces du jour\n\n"
         "🚖 <b>Signaler des voitures</b>\n"
@@ -2174,8 +1890,6 @@ def traiter_commandes(vols, trains=None):
             repondre_telegram(chat_id, commande_vol(vols, partie[1]))
         elif commande == "/tgv":
             repondre_telegram(chat_id, commande_tgv(trains))
-        elif commande == "/quota":
-            repondre_telegram(chat_id, commande_quota())
         elif commande == "/etat":
             repondre_telegram(chat_id, commande_etat_file())
         elif commande == "/vide":
@@ -2218,9 +1932,7 @@ def boucle_principale():
     message_demarrage = (
         "🔄 <b>EasyTaxi Flight Alert redémarré</b>\n"
         f"({maintenant().strftime('%d/%m à %H:%M')})\n\n"
-        "Site aéroport gratuit + API AeroDataBox (quota géré) + commandes /aide.\n"
-        f"🔌 Quota API vols : {quota_utilise()}/{QUOTA_API_MENSUEL} utilisés ce mois-ci "
-        f"({quota_restant()} restants, ~{budget_journalier_calls()}/jour)."
+        "Source vols : site officiel de l'aéroport (gratuit) + commandes /aide."
     )
     if SNCF_API_TOKEN:
         message_demarrage += f"\n🚄 Module TGV activé (gare : {SNCF_GARE_NOM})."
@@ -2231,7 +1943,6 @@ def boucle_principale():
 
     try:
         vols = mettre_a_jour_cache_si_besoin(force=True)
-        vols = enrichir_live_status(vols)
         initialiser_sans_spam(vols)
 
         trains = mettre_a_jour_cache_trains_si_besoin(force=True)
@@ -2250,7 +1961,6 @@ def boucle_principale():
             verifier_expiration_volees()
 
             vols = mettre_a_jour_cache_si_besoin(force=False)
-            vols = enrichir_live_status(vols)
             envoyer_alertes(vols)
 
             trains = mettre_a_jour_cache_trains_si_besoin(force=False)
