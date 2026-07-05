@@ -1055,6 +1055,10 @@ def creer_resume(vols, trains=None):
 
     blocs = [
         f"✈️ <b>EASYTAXI FLIGHT ALERT</b>\n🕒 {maintenant().strftime('%H:%M')}",
+    ]
+    if evenement_du_jour_cache:
+        blocs.append(evenement_du_jour_cache)
+    blocs += [
         f"🚖 {label_affluence} demande {emoji_affluence} ({len(retards)})",
         bloc_etat_voitures(),
         f"✈️ En approche : {len(approches)}\n✅ Posés : {len(poses)}",
@@ -1256,6 +1260,240 @@ def envoyer_alertes(vols):
 
     if sections:
         envoyer_telegram(encadrer_message("\n\n".join(sections)), silencieux=False)
+
+
+# =========================
+# ÉVÉNEMENTS DU JOUR (Cannes / Monaco en priorité, Nice en repli)
+# Scanné une fois par jour (pas à chaque résumé) et mis en cache, puisqu'un
+# événement ne change pas dans la journée — inutile de re-scraper toutes les 30 min.
+# =========================
+
+URL_EVENEMENTS_CANNES = "https://www.palaisdesfestivals.com/agenda/professionnel/"
+URL_EVENEMENTS_MONACO = "https://www.grimaldiforum.com/fr/agenda/page"
+URL_EVENEMENTS_NICE = "https://www.meet-in-nicecotedazur.com/agenda-pro/"
+
+MOIS_FR = {
+    "janvier": 1, "fevrier": 2, "février": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6,
+    "juillet": 7, "aout": 8, "août": 8, "septembre": 9, "octobre": 10, "novembre": 11,
+    "decembre": 12, "décembre": 12,
+    "sept": 9, "oct": 10, "nov": 11, "dec": 12, "déc": 12, "janv": 1, "fev": 2, "fév": 2,
+    "juil": 7,
+}
+
+evenement_du_jour_cache = None  # texte prêt à insérer dans le résumé, ou None si rien aujourd'hui
+dernier_scan_evenements = None  # date du dernier scan
+
+
+def _normaliser_mois(mot):
+    m = unicodedata.normalize("NFKD", (mot or "").lower().rstrip("."))
+    m = "".join(c for c in m if not unicodedata.combining(c))
+    return MOIS_FR.get(m)
+
+
+def construire_date_evenement(jour, mois_nom, annee=None):
+    """Construit une date à partir d'un jour + nom de mois français, en devinant
+    l'année si elle n'est pas fournie (déduite par rapport à aujourd'hui)."""
+    mois = _normaliser_mois(mois_nom)
+    if not mois:
+        return None
+    try:
+        jour = int(jour)
+    except (TypeError, ValueError):
+        return None
+    aujourdhui = maintenant().date()
+    if annee is not None:
+        try:
+            return datetime(int(annee), mois, jour).date()
+        except ValueError:
+            return None
+    for candidate_annee in (aujourdhui.year, aujourdhui.year + 1):
+        try:
+            candidate = datetime(candidate_annee, mois, jour).date()
+        except ValueError:
+            continue
+        if (aujourdhui - candidate).days <= 60:
+            return candidate
+    return None
+
+
+def extraire_evenement_cannes(texte_brut):
+    """Extrait titre + dates d'un texte de carte événement Cannes, du type
+    'Cannes Yachting Festival Du 8 au 13 Septembre' ou 'NRJ Music Awards Le Vendredi 23 Oct. à 21:00'."""
+    t = nettoyer(texte_brut)
+    for pattern, kind in (
+        (r"Du\s+(\d{1,2})\s+([A-Za-zéûôîâ]+)\s+au\s+(\d{1,2})\s+([A-Za-zéûôîâ]+)", "cross"),
+        (r"Du\s+(\d{1,2})\s+au\s+(\d{1,2})\s+([A-Za-zéûôîâ]+)", "same"),
+        (r"Le\s+\w+\s+(\d{1,2})\s+([A-Za-zéûôîâ]+)\.?", "single"),
+    ):
+        m = re.search(pattern, t, re.IGNORECASE)
+        if not m:
+            continue
+        titre = t[:m.start()].strip(" -–:")
+        if len(titre) < 3:
+            continue
+        if kind == "cross":
+            d1 = construire_date_evenement(m.group(1), m.group(2))
+            d2 = construire_date_evenement(m.group(3), m.group(4))
+        elif kind == "same":
+            mois = m.group(3)
+            d1 = construire_date_evenement(m.group(1), mois)
+            d2 = construire_date_evenement(m.group(2), mois)
+        else:
+            d1 = construire_date_evenement(m.group(1), m.group(2))
+            d2 = d1
+        if not d1 or not d2:
+            continue
+        return {"titre": titre, "debut": d1, "fin": d2}
+    return None
+
+
+def recuperer_evenements_cannes():
+    evenements = []
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/15.0"}
+        r = requests.get(URL_EVENEMENTS_CANNES, headers=headers, timeout=20)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        for a in soup.find_all("a"):
+            evt = extraire_evenement_cannes(a.get_text(" ", strip=True))
+            if evt:
+                evenements.append(evt)
+        logger.info(f"Événements Cannes: {len(evenements)} trouvés")
+    except Exception as e:
+        logger.warning(f"Erreur récupération événements Cannes: {e}")
+    return evenements
+
+
+def extraire_dates_monaco(texte_brut):
+    """Extrait (date_debut, date_fin) d'un texte de carte événement Monaco, du type
+    'mer. 1 juillet - dim. 6 septembre 2026', 'sam. 11 - dim. 12 juillet 2026'
+    ou 'sam. 12 septembre 2026'."""
+    t = nettoyer(texte_brut)
+    m = re.search(
+        r"(\d{1,2})\s+([A-Za-zéûôîâ]+)\s*-\s*[a-zéû]+\.?\s*(\d{1,2})\s+([A-Za-zéûôîâ]+)\s+(\d{4})",
+        t, re.IGNORECASE
+    )
+    if m:
+        d1 = construire_date_evenement(m.group(1), m.group(2), m.group(5))
+        d2 = construire_date_evenement(m.group(3), m.group(4), m.group(5))
+        return d1, d2
+    m = re.search(
+        r"(\d{1,2})\s*-\s*[a-zéû]+\.?\s*(\d{1,2})\s+([A-Za-zéûôîâ]+)\s+(\d{4})",
+        t, re.IGNORECASE
+    )
+    if m:
+        mois, annee = m.group(3), m.group(4)
+        d1 = construire_date_evenement(m.group(1), mois, annee)
+        d2 = construire_date_evenement(m.group(2), mois, annee)
+        return d1, d2
+    m = re.search(r"(\d{1,2})\s+([A-Za-zéûôîâ]+)\s+(\d{4})", t, re.IGNORECASE)
+    if m:
+        d = construire_date_evenement(m.group(1), m.group(2), m.group(3))
+        return d, d
+    return None, None
+
+
+def recuperer_evenements_monaco():
+    evenements = []
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/15.0"}
+    try:
+        for page in (1, 2, 3):
+            data = {"event-filter[dates]": "", "event-filter[search]": "", "event-filter[index]": str(page)}
+            r = requests.post(URL_EVENEMENTS_MONACO, headers=headers, data=data, timeout=20)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
+            cartes = soup.find_all("a", class_="landing__events__item")
+            if not cartes:
+                break
+            for carte in cartes:
+                nom_div = carte.find("div", class_="landing__events__item__name")
+                dates_div = carte.find("div", class_="landing__events__item__dates")
+                if not nom_div or not dates_div:
+                    continue
+                titre = nettoyer(nom_div.get_text(strip=True))
+                d1, d2 = extraire_dates_monaco(dates_div.get_text(strip=True))
+                if not d1 or not d2:
+                    continue
+                evenements.append({"titre": titre, "debut": d1, "fin": d2})
+        logger.info(f"Événements Monaco: {len(evenements)} trouvés")
+    except Exception as e:
+        logger.warning(f"Erreur récupération événements Monaco: {e}")
+    return evenements
+
+
+def extraire_evenement_nice(texte_brut):
+    """Extrait titre + dates d'un texte de carte événement Nice, du type
+    'NOM DE L'ÉVÉNEMENT 27 sept. 01 oct. 2026'."""
+    t = nettoyer(texte_brut)
+    m = re.search(
+        r"(\d{1,2})\s+([A-Za-zéûôîâ]+)\.?\s+(\d{1,2})\s+([A-Za-zéûôîâ]+)\.?\s+(\d{4})",
+        t, re.IGNORECASE
+    )
+    if not m:
+        return None
+    titre = t[:m.start()].strip(" -–:")
+    if len(titre) < 3:
+        return None
+    d1 = construire_date_evenement(m.group(1), m.group(2), m.group(5))
+    d2 = construire_date_evenement(m.group(3), m.group(4), m.group(5))
+    if not d1 or not d2:
+        return None
+    return {"titre": titre, "debut": d1, "fin": d2}
+
+
+def recuperer_evenements_nice():
+    evenements = []
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/15.0"}
+        r = requests.get(URL_EVENEMENTS_NICE, headers=headers, timeout=20)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        for a in soup.find_all("a"):
+            evt = extraire_evenement_nice(a.get_text(" ", strip=True))
+            if evt:
+                evenements.append(evt)
+        logger.info(f"Événements Nice: {len(evenements)} trouvés")
+    except Exception as e:
+        logger.warning(f"Erreur récupération événements Nice: {e}")
+    return evenements
+
+
+def _evenement_est_aujourdhui(evt):
+    aujourdhui = maintenant().date()
+    return evt["debut"] <= aujourdhui <= evt["fin"]
+
+
+def _formater_ligne_evenement(evt, ville):
+    if evt["debut"] == evt["fin"]:
+        return f"🎫 Événement : {evt['titre']} ({ville})"
+    return f"🎫 Événement : {evt['titre']} ({ville}, jusqu'au {evt['fin'].strftime('%d/%m')})"
+
+
+def mettre_a_jour_evenements_si_besoin(force=False):
+    """Scanne Cannes/Monaco (priorité) puis Nice (repli) une fois par jour,
+    et met en cache le résultat pour tous les résumés de la journée."""
+    global evenement_du_jour_cache, dernier_scan_evenements
+    aujourdhui = maintenant().date()
+    if not force and dernier_scan_evenements == aujourdhui:
+        return
+
+    try:
+        cannes = [e for e in recuperer_evenements_cannes() if _evenement_est_aujourdhui(e)]
+        monaco = [e for e in recuperer_evenements_monaco() if _evenement_est_aujourdhui(e)]
+        prioritaires = [(e, "Cannes") for e in cannes] + [(e, "Monaco") for e in monaco]
+
+        if prioritaires:
+            lignes = [_formater_ligne_evenement(e, ville) for e, ville in prioritaires[:2]]
+        else:
+            nice = [e for e in recuperer_evenements_nice() if _evenement_est_aujourdhui(e)]
+            lignes = [_formater_ligne_evenement(e, "Nice") for e in nice[:2]]
+
+        evenement_du_jour_cache = "\n".join(lignes) if lignes else None
+        logger.info(f"Événement(s) du jour retenu(s): {evenement_du_jour_cache!r}")
+    except Exception as e:
+        logger.warning(f"Erreur mise à jour événements du jour: {e}")
+
+    dernier_scan_evenements = aujourdhui
 
 
 # =========================
@@ -2359,124 +2597,4 @@ def boucle_principale():
     init_db()
     message_demarrage = (
         "🔄 <b>EasyTaxi Flight Alert redémarré</b> — mise à jour déployée\n"
-        f"({maintenant().strftime('%d/%m à %H:%M')})\n\n"
-        "📡 Source vols : site officiel de l'aéroport — endpoint intégré et optimisé par Tony"
-    )
-    if SNCF_API_TOKEN:
-        message_demarrage += f"\n🚄 Module trains activé (TGV + TER, gare : {SNCF_GARE_NOM})."
-    else:
-        message_demarrage += "\n🚄 Module trains désactivé (SNCF_API_TOKEN manquant)."
-    message_demarrage += "\n🔒 Hébergement privé sécurisé"
-    envoyer_telegram(message_demarrage, silencieux=True)
-
-    # Fin de la période de grâce : pendant les 90s qui suivent un redémarrage,
-    # aucune alerte ni résumé automatique n'est envoyé (seul le message ci-dessus part),
-    # même si un créneau de résumé fixe (13h00, 13h30...) tombe pile à ce moment-là.
-    fin_grace_demarrage = maintenant() + timedelta(seconds=90)
-
-    try:
-        vols = mettre_a_jour_cache_si_besoin(force=True)
-        initialiser_sans_spam(vols)
-
-        trains = mettre_a_jour_cache_trains_si_besoin(force=True)
-        initialiser_sans_spam_trains(trains)
-
-        dernier_resume = maintenant()
-        dernier_slot_resume = slot_demi_heure_actuel()
-    except Exception as e:
-        logger.error(f"Erreur démarrage: {e}")
-        envoyer_telegram(f"⚠️ Erreur démarrage : {e}", silencieux=True)
-        vols, trains = [], []
-
-    while True:
-        try:
-            nettoyer_caches_si_besoin()
-            verifier_expiration_volees()
-
-            vols = mettre_a_jour_cache_si_besoin(force=False)
-            trains = mettre_a_jour_cache_trains_si_besoin(force=False)
-
-            en_periode_grace = maintenant() < fin_grace_demarrage
-
-            # Petites alertes (approche/posé/retard/annulé) : envoi immédiat normalement,
-            # mais entre 2h et 7h du matin on les regroupe et espace toutes les 15 min
-            # pour ne pas multiplier les notifications nocturnes.
-            if not en_periode_grace:
-                heure_actuelle = maintenant().hour
-                if NUIT_ESPACEMENT_HEURE_DEBUT <= heure_actuelle < NUIT_ESPACEMENT_HEURE_FIN:
-                    if (dernier_envoi_alertes_nuit is None
-                            or (maintenant() - dernier_envoi_alertes_nuit).total_seconds() >= NUIT_ESPACEMENT_SECONDES):
-                        envoyer_alertes(vols)
-                        envoyer_alertes_trains(trains)
-                        dernier_envoi_alertes_nuit = maintenant()
-                else:
-                    envoyer_alertes(vols)
-                    envoyer_alertes_trains(trains)
-
-                envoyer_resume_matin_si_besoin(vols)
-                envoyer_resume_nuit_si_besoin(vols)
-                envoyer_stats_soir_si_besoin()
-
-            # Gros résumé : sur des créneaux fixes (13h00, 13h30, 14h00...),
-            # jamais entre 01:30 et 07:29 inclus, jamais pendant la période de grâce.
-            slot_actuel = slot_demi_heure_actuel()
-            if not en_periode_grace and not en_pause_resume_fixe() and slot_actuel != dernier_slot_resume:
-                d60 = vols_dans_minutes(vols, 60)
-                trains_60 = trains_dans_minutes(trains, 60) if trains else []
-                rien_a_signaler = len(d60) == 0 and len(trains_60) == 0
-                if _en_heures_creuses() and rien_a_signaler:
-                    logger.info("Résumé périodique sauté (heures creuses, rien à signaler).")
-                else:
-                    envoyer_telegram(creer_resume(vols, trains), silencieux=False)
-                dernier_resume = maintenant()
-                dernier_slot_resume = slot_actuel
-
-        except Exception as e:
-            logger.error(f"Erreur boucle: {e}")
-            envoyer_telegram(f"⚠️ Erreur EasyTaxi Flight Alert : {e}", silencieux=True)
-
-        time.sleep(10)
-
-
-def boucle_commandes():
-    """Thread dédié aux commandes/boutons Telegram, séparé de la boucle vols/trains,
-    pour une réactivité quasi instantanée (long-polling, pas de délai de 10s)."""
-    while True:
-        try:
-            traiter_commandes(vols_cache, trains_cache)
-        except Exception as e:
-            logger.error(f"Erreur boucle commandes: {e}")
-            time.sleep(1)
-
-
-def boucle_expiration_menus():
-    """Vérifie l'expiration des menus 'Choisis l'emplacement' sur un minuteur indépendant.
-    Le long-polling Telegram (boucle_commandes) peut rester bloqué jusqu'à 20s en attendant
-    un message ; si la vérification tournait dans cette même boucle, elle serait retardée
-    d'autant, et le menu resterait affiché bien plus longtemps que MENU_TIMEOUT_SECONDES."""
-    while True:
-        try:
-            verifier_expiration_menus()
-        except Exception as e:
-            logger.error(f"Erreur boucle expiration menus: {e}")
-        time.sleep(1)
-
-
-def main():
-    """Supervisor : si boucle_principale plante malgré tout, on redémarre au lieu de mourir."""
-    threading.Thread(target=boucle_commandes, daemon=True).start()
-    threading.Thread(target=boucle_expiration_menus, daemon=True).start()
-    while True:
-        try:
-            boucle_principale()
-        except Exception as e:
-            logger.critical(f"Crash total du bot : {e}")
-            try:
-                envoyer_telegram(f"🚨 <b>Crash total</b> : {e}\nRedémarrage automatique dans 30s.", silencieux=True)
-            except Exception:
-                pass
-            time.sleep(30)
-
-
-if __name__ == "__main__":
-    main()
+        f"({maintenant
