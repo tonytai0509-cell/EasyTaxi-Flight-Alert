@@ -1259,7 +1259,8 @@ def clavier_nombres(loc):
     if ligne:
         lignes.append(ligne)
     if loc == "t2_lineaire":
-        lignes.append([{"text": "A4 (½ parking)", "callback_data": f"cnt:{loc}:A4"},
+        lignes.append([{"text": "3/4", "callback_data": f"cnt:{loc}:3/4"},
+                        {"text": "A4 (½ parking)", "callback_data": f"cnt:{loc}:A4"},
                         {"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
     if loc == "t1_babel":
         lignes.append([{"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
@@ -1502,7 +1503,7 @@ def traiter_callback(callback):
 
     if data.startswith("cnt:"):
         _, loc, nombre_str = data.split(":", 2)
-        if nombre_str in ("A4", "FULL"):
+        if nombre_str in ("A4", "FULL", "3/4"):
             nombre = nombre_str
         else:
             try:
@@ -1517,6 +1518,8 @@ def traiter_callback(callback):
             repondre_callback(callback_id, "Enregistré ✅")
             if nombre == "A4":
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>A4</b> (½ parking)"
+            elif nombre == "3/4":
+                texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>3/4</b> (linéaire presque plein)"
             elif nombre == "FULL":
                 if loc == "t1_babel":
                     precision = "Babel plein"
@@ -1807,26 +1810,39 @@ def envoyer_stats_soir_si_besoin():
 
 
 def commande_aide():
+    ligne = "─" * 20
     return (
-        "📋 <b>Commandes disponibles</b>\n"
-        "/prochain — prochain vol attendu\n"
-        "/t1 — vols Terminal 1 (1h) · /t1+ (3h)\n"
-        "/t2 — vols Terminal 2 (1h) · /t2+ (3h)\n"
-        "/vol NUMERO — chercher un vol précis\n"
-        "/tgv — prochains TGV à Nice-Ville (1h)\n"
-        "/etat — voitures aux terminaux\n"
-        "/top — top 5 des annonces du jour\n\n"
-        "🚖 <b>Signaler des voitures</b>\n"
-        "Appuie sur le bouton <b>🚖 Signaler</b> en bas de l'écran (2 taps)\n"
-        "Ou tape <code>/v</code>\n"
-        "Ou écris directement :\n"
-        "<code>T2 linéaire 15v</code> · <code>T2 15 pk</code>\n"
-        "<code>T1 linéaire 4</code> · <code>T1 10 babel</code>\n\n"
-        "🚨 <b>Alerte VOLÉE</b> (trop de monde, pas assez de taxis)\n"
-        "Tape <code>v1</code> ou <code>v2</code>, ou utilise les boutons "
-        "VOLÉE dans <code>/signaler</code>\n\n"
-        "<i>Toutes ces commandes utilisent uniquement les données déjà en cache "
-        "(sources gratuites) — aucun appel API supplémentaire n'est déclenché.</i>"
+        f"{ligne}\n"
+        "📋 <b>AIDE &amp; COMMANDES</b>\n"
+        "<i>Tout ce qu'il vous faut en un coup d'œil</i>\n"
+        f"{ligne}\n\n"
+
+        "✈️ <b>VOLS &amp; RECHERCHES</b>\n"
+        "<code>/prochain</code>  Prochain vol attendu\n"
+        "<code>/t1</code>  Terminal 1 (1h) · <code>/t1+</code> (3h)\n"
+        "<code>/t2</code>  Terminal 2 (1h) · <code>/t2+</code> (3h)\n"
+        "<code>/vol NUMERO</code>  Chercher un vol précis\n"
+        "<code>/tgv</code>  Prochains TGV Nice-Ville (1h)\n"
+        "<code>/etat</code>  Voitures aux terminaux\n"
+        "<code>/top</code>  🏆 Top 5 des annonces du jour\n"
+        f"{ligne}\n\n"
+
+        "🚖 <b>SIGNALER DES VOITURES</b>\n"
+        "• Bouton <b>🚖 Signaler</b> en bas de l'écran (2 taps)\n"
+        "• Ou tape <code>/v</code>\n"
+        "• Ou écris directement :\n"
+        "  <code>T2 linéaire 15v</code> · <code>T2 15 pk</code>\n"
+        "  <code>T1 linéaire 4</code> · <code>T1 10 babel</code>\n"
+        f"{ligne}\n\n"
+
+        "🚨 <b>ALERTE VOLÉE</b> <i>(trop de monde)</i>\n"
+        "Si pas assez de taxis pour la demande :\n"
+        "• Tape <code>v1</code> ou <code>v2</code>\n"
+        "• Ou boutons VOLÉE dans <code>/signaler</code>\n"
+        f"{ligne}\n\n"
+
+        "ℹ️ <i>Toutes ces commandes utilisent uniquement les données déjà "
+        "en cache (sources gratuites) — aucun appel API supplémentaire.</i>"
     )
 
 
