@@ -1333,6 +1333,9 @@ LOC_LABELS = {
 NOMBRES_RAPIDES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30]
 attente_nombre_personnalise = {}  # (chat_id, user_id) -> (terminal, mode)
 
+NOMBRES_PAX_VOLEE = [0, 5, 10, 15, 20, 30, 40, 50, 60, 80, 100]
+attente_pax_volee = {}  # (chat_id, user_id) -> (terminal_code, prompt_id, qui)
+
 # ---- Auto-suppression des menus "Choisis l'emplacement" jamais utilisés ----
 MENU_TIMEOUT_SECONDES = int(os.getenv("MENU_TIMEOUT_SECONDES", "10"))
 menus_en_attente = {}  # message_id -> {"chat_id": ..., "envoye": datetime}
@@ -1358,6 +1361,22 @@ def clavier_confirmation_volee(terminal_code):
         {"text": "✅ Confirmer", "callback_data": f"voleeconfirm:{terminal_code}"},
         {"text": "❌ Annuler", "callback_data": "loc:retour"},
     ]]}
+
+
+def clavier_pax_volee(terminal_code):
+    """Clavier affiché après confirmation, pour préciser environ combien de passagers
+    attendent — cette info est incluse dans le message d'alerte final."""
+    lignes, ligne = [], []
+    for i, n in enumerate(NOMBRES_PAX_VOLEE, start=1):
+        ligne.append({"text": str(n), "callback_data": f"vpaxcnt:{terminal_code}:{n}"})
+        if i % 5 == 0:
+            lignes.append(ligne)
+            ligne = []
+    if ligne:
+        lignes.append(ligne)
+    lignes.append([{"text": "✏️ Autre nombre", "callback_data": f"vpaxcustom:{terminal_code}"}])
+    lignes.append([{"text": "❌ Annuler", "callback_data": f"voleeannulerpax:{terminal_code}"}])
+    return {"inline_keyboard": lignes}
 
 
 def clavier_annulation_volee(terminal_code):
@@ -1493,11 +1512,15 @@ def envoyer_demande_nombre(chat_id, label, question=None):
     return None
 
 
-def texte_alerte_volee(terminal_code, qui=None):
+def texte_alerte_volee(terminal_code, qui=None, nb_pax=None):
     label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
     corps = (
         "🚨🚨🚨 <b>ALERTE VOLÉE</b> 🚨🚨🚨\n\n"
         f"<b>BEAUCOUP DE MONDE À {label}</b>\n"
+    )
+    if nb_pax is not None:
+        corps += f"👥 Environ <b>{nb_pax}</b> passagers en attente\n"
+    corps += (
         "Besoin de renfort dès que possible !\n\n"
         f"⏱️ Expire automatiquement dans {DUREE_VOLEE_MINUTES} min si non annulée."
     )
@@ -1530,14 +1553,14 @@ def desepingler_message(chat_id, message_id):
         logger.error(f"Erreur désépinglage message: {e}")
 
 
-def envoyer_alerte_volee(chat_id, terminal_code, qui=None):
+def envoyer_alerte_volee(chat_id, terminal_code, qui=None, nb_pax=None):
     """Envoie le message d'alerte voyant, épinglé, avec un bouton pour l'annuler manuellement."""
     try:
         r = requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
             data={
                 "chat_id": chat_id,
-                "text": texte_alerte_volee(terminal_code, qui),
+                "text": texte_alerte_volee(terminal_code, qui, nb_pax),
                 "parse_mode": "HTML",
                 "disable_notification": False,  # notification normale, pas silencieuse
                 "reply_markup": json.dumps(clavier_annulation_volee(terminal_code)),
@@ -1618,11 +1641,47 @@ def traiter_callback(callback):
             repondre_callback(callback_id)
             supprimer_message_telegram(chat_id, message_id)
             return
+        repondre_callback(callback_id)
+        editer_message_telegram(
+            chat_id, message_id,
+            "🔢 Environ combien de passagers attendent ?",
+            clavier_pax_volee(terminal_code)
+        )
+        return
+
+    if data.startswith("voleeannulerpax:"):
+        repondre_callback(callback_id, "Annulé")
+        supprimer_message_telegram(chat_id, message_id)
+        return
+
+    if data.startswith("vpaxcnt:"):
+        _, terminal_code, nombre_str = data.split(":", 2)
+        try:
+            nb_pax = int(nombre_str)
+        except ValueError:
+            repondre_callback(callback_id)
+            return
+        if terminal_code in volee_active:
+            repondre_callback(callback_id)
+            supprimer_message_telegram(chat_id, message_id)
+            return
         repondre_callback(callback_id, "Alerte envoyée")
         supprimer_message_telegram(chat_id, message_id)
-        nouveau_message_id = envoyer_alerte_volee(chat_id, terminal_code, qui)
+        nouveau_message_id = envoyer_alerte_volee(chat_id, terminal_code, qui, nb_pax)
         if nouveau_message_id:
             volee_active[terminal_code] = {"debut": maintenant(), "message_id": nouveau_message_id}
+        return
+
+    if data.startswith("vpaxcustom:"):
+        terminal_code = data.split(":", 1)[1]
+        user_id = (callback.get("from") or {}).get("id")
+        repondre_callback(callback_id)
+        supprimer_message_telegram(chat_id, message_id)
+        prompt_id = envoyer_demande_nombre(
+            chat_id, None,
+            question="✏️ Environ combien de passagers ? Tape le nombre et envoie-le."
+        )
+        attente_pax_volee[(chat_id, user_id)] = (terminal_code, prompt_id, qui)
         return
 
     if data.startswith("volee:"):
@@ -1905,6 +1964,19 @@ def detecter_bb_babel(texte):
     return ("t1", nombre, "reserve")
 
 
+def detecter_volee_pax(texte):
+    """Détecte 'v1 10', 'v1 10pax', 'v2 15 pax' etc. comme déclenchement DIRECT
+    d'une alerte VOLÉE avec un nombre de passagers, sans repasser par l'écran
+    de confirmation — taper un nombre explicite est déjà une action volontaire."""
+    t = texte.lower().strip()
+    m = re.fullmatch(r"v([12])\s+(\d+)\s*(?:pax)?", t)
+    if not m:
+        return None
+    terminal_code = f"v{m.group(1)}"
+    nb_pax = int(m.group(2))
+    return (terminal_code, nb_pax)
+
+
 def detecter_ca_tire(texte):
     """Détecte 'ça tire t1' / 'ça tire t2' (avec ou sans accent/espace),
     pour signaler un rythme soutenu sans donner de nombre précis."""
@@ -2080,6 +2152,17 @@ def traiter_commandes(vols, trains=None):
                     menus_en_attente[mid] = {"chat_id": chat_id, "envoye": maintenant()}
                 continue
 
+            resultat_volee_pax = detecter_volee_pax(texte)
+            if resultat_volee_pax:
+                terminal_code, nb_pax = resultat_volee_pax
+                qui = (message.get("from") or {}).get("first_name", "quelqu'un")
+                supprimer_message_telegram(chat_id, message["message_id"])
+                if terminal_code not in volee_active:
+                    nouveau_message_id = envoyer_alerte_volee(chat_id, terminal_code, qui, nb_pax)
+                    if nouveau_message_id:
+                        volee_active[terminal_code] = {"debut": maintenant(), "message_id": nouveau_message_id}
+                continue
+
             if texte.lower() in ("v1", "v2"):
                 terminal_code = texte.lower()
                 label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
@@ -2093,6 +2176,23 @@ def traiter_commandes(vols, trains=None):
 
             user_id = (message.get("from") or {}).get("id")
             cle_attente = (chat_id, user_id)
+
+            if cle_attente in attente_pax_volee:
+                m = re.search(r"\d+", texte)
+                if m:
+                    terminal_code, prompt_id, qui_declencheur = attente_pax_volee.pop(cle_attente)
+                    nb_pax = int(m.group())
+                    supprimer_message_telegram(chat_id, message["message_id"])
+                    if prompt_id:
+                        supprimer_message_telegram(chat_id, prompt_id)
+                    if terminal_code not in volee_active:
+                        nouveau_message_id = envoyer_alerte_volee(chat_id, terminal_code, qui_declencheur, nb_pax)
+                        if nouveau_message_id:
+                            volee_active[terminal_code] = {"debut": maintenant(), "message_id": nouveau_message_id}
+                else:
+                    repondre_telegram(chat_id, "Envoie juste un nombre, ex: 25")
+                continue
+
             if cle_attente in attente_nombre_personnalise:
                 m = re.search(r"\d+", texte)
                 if m:
