@@ -330,21 +330,8 @@ def envoyer_telegram(message, silencieux=False):
         logger.error(f"Erreur Telegram: {e}")
 
 
-def recuperer_site_aeroport():
-    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/12.0"}
-    r = requests.get(URL_SITE_AEROPORT, headers=headers, timeout=25)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-    lignes = [nettoyer(x) for x in soup.get_text("\n").split("\n")]
-    return [x for x in lignes if x]
-
-
 def est_heure(x):
     return bool(re.fullmatch(r"\d{1,2}:\d{2}", x or ""))
-
-
-def est_numero_vol(x):
-    return bool(re.fullmatch(r"[A-Z0-9]{2,3}\s?\d{2,5}[A-Z]?", (x or "").strip()))
 
 
 def normaliser_terminal(x):
@@ -375,86 +362,77 @@ def extraire_heure(x):
     return heures[-1] if heures else None
 
 
-def ligne_ressemble_ville(x):
-    if not x or est_heure(x) or est_numero_vol(x) or normaliser_terminal(x):
-        return False
-    bad = ["expected", "arrived", "landing", "delayed", "cancelled", "terminal", "flight", "arrival"]
-    return not any(b in x.lower() for b in bad) and len(x) >= 3
-
-
-def decouper_blocs_site(lignes):
-    debuts = []
-    for i in range(len(lignes) - 1):
-        if est_heure(lignes[i]) and ligne_ressemble_ville(lignes[i + 1]):
-            debuts.append(i)
-    blocs = []
-    for idx, debut in enumerate(debuts):
-        fin = debuts[idx + 1] if idx + 1 < len(debuts) else min(debut + 40, len(lignes))
-        blocs.append(lignes[debut:fin])
-    return blocs
+def premiere_ligne_cellule(cellule):
+    """Extrait la première ligne de texte utile d'une cellule de tableau.
+    Certaines cellules (provenance, compagnie, n° de vol) empilent plusieurs
+    lignes quand un vol est partagé entre plusieurs compagnies (codeshare) —
+    on ne garde que la première, qui correspond au vol principal."""
+    if cellule is None:
+        return ""
+    lignes = [nettoyer(x) for x in cellule.get_text("\n").split("\n") if nettoyer(x)]
+    return lignes[0] if lignes else ""
 
 
 def recuperer_vols_site():
-    lignes = recuperer_site_aeroport()
-    blocs = decouper_blocs_site(lignes)
+    """Parse directement les lignes <tr>/<td> du tableau HTML du site aéroport,
+    plutôt que d'aplatir toute la page en texte et deviner les frontières de blocs.
+    Ça évite qu'un vol en codeshare (plusieurs compagnies/n° de vol empilés dans
+    une cellule) ne décale la lecture des vols suivants et leur attribue le mauvais
+    terminal — chaque <tr> reste toujours associé à son propre terminal, quelle
+    que soit la taille des cellules provenance/compagnie/numéro."""
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/13.0"}
+    r = requests.get(URL_SITE_AEROPORT, headers=headers, timeout=25)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    table = soup.find("table")
+    if not table:
+        return []
+
     vols = []
+    for tr in table.find_all("tr"):
+        cellules = tr.find_all(["td", "th"])
+        if len(cellules) < 5:
+            continue  # ligne d'en-tête ou ligne incomplète
 
-    mots_statut = ["Arrived", "Expected", "Delayed", "Landing", "Cancelled", "Prévu", "Approche", "Retard", "Atterri"]
+        heure = nettoyer(cellules[0].get_text(" ", strip=True))
+        if not est_heure(heure):
+            continue  # pas une ligne de vol (en-tête, séparateur, etc.)
 
-    for bloc in blocs:
-        if len(bloc) < 3:
+        ville = nettoyer_nom(premiere_ligne_cellule(cellules[1]))
+        compagnie = nettoyer_compagnie(premiere_ligne_cellule(cellules[2])) if len(cellules) > 2 else "N/A"
+        numero = premiere_ligne_cellule(cellules[3]).replace(" ", "") if len(cellules) > 3 else "N/A"
+        terminal = normaliser_terminal(cellules[4].get_text(" ", strip=True)) if len(cellules) > 4 else None
+
+        if terminal not in ("1", "2"):
             continue
 
-        heure = bloc[0]
-        ville = nettoyer_nom(bloc[1])
-        terminal = None
-        numero = "N/A"
-        compagnie = "N/A"
-        status = "Expected"
+        status_brut = nettoyer(cellules[5].get_text(" ", strip=True)) if len(cellules) > 5 else ""
+        status = statut_site_lisible(status_brut) if status_brut else "Expected"
 
-        for x in bloc:
-            t = normaliser_terminal(x)
-            if t:
-                terminal = t
-            if est_numero_vol(x):
-                numero = x.replace(" ", "")
-            if any(m.lower() in x.lower() for m in mots_statut):
-                status = statut_site_lisible(x)
+        heure_status = extraire_heure(status)
+        actuel = heure_status or heure
+        dt_prevu = heure_aujourdhui(heure)
+        retard = minutes_retard(heure, actuel)
+        # dt_actuel dérivé de dt_prevu + retard (déjà corrigé pour le passage de minuit),
+        # plutôt que reparsé indépendamment (qui aurait le même bug de jour).
+        dt_actuel = (dt_prevu + timedelta(minutes=retard)) if dt_prevu else heure_aujourdhui(actuel)
 
-        for x in bloc[2:]:
-            if x in [heure, ville, terminal, numero]:
-                continue
-            if normaliser_terminal(x) or est_heure(x) or est_numero_vol(x):
-                continue
-            if any(m.lower() in x.lower() for m in mots_statut):
-                continue
-            if len(x) >= 3:
-                compagnie = nettoyer_compagnie(x)
-                break
-
-        if terminal in ["1", "2"]:
-            heure_status = extraire_heure(status)
-            actuel = heure_status or heure
-            dt_prevu = heure_aujourdhui(heure)
-            retard = minutes_retard(heure, actuel)
-            # dt_actuel dérivé de dt_prevu + retard (déjà corrigé pour le passage de minuit),
-            # plutôt que reparsé indépendamment (qui aurait le même bug de jour).
-            dt_actuel = (dt_prevu + timedelta(minutes=retard)) if dt_prevu else heure_aujourdhui(actuel)
-            vols.append({
-                "numero": numero,
-                "compagnie": compagnie,
-                "provenance": ville,
-                "terminal": terminal,
-                "status": "Expected",
-                "live_status": None,
-                "site_status": status,
-                "dt_prevu": dt_prevu,
-                "dt_actuel": dt_actuel,
-                "prevu": heure,
-                "actuel": actuel,
-                "retard": retard,
-                "source": "site"
-            })
+        vols.append({
+            "numero": numero or "N/A",
+            "compagnie": compagnie or "N/A",
+            "provenance": ville,
+            "terminal": terminal,
+            "status": "Expected",
+            "live_status": None,
+            "site_status": status,
+            "dt_prevu": dt_prevu,
+            "dt_actuel": dt_actuel,
+            "prevu": heure,
+            "actuel": actuel,
+            "retard": retard,
+            "source": "site"
+        })
 
     return dedoublonner_vols(vols)
 
@@ -1901,6 +1879,18 @@ def detecter_format_court_lineaire(texte):
     return (terminal, nombre, "lineaire")
 
 
+def detecter_bb_babel(texte):
+    """Détecte 'bb23', '23bb', 'bb 23', '23 bb' (avec ou sans espace) comme signalement
+    du nombre de voitures à Babel (T1) — 'bb' est utilisé par les chauffeurs comme
+    raccourci pour Babel. Toujours T1, puisque Babel n'existe qu'à ce terminal."""
+    t = texte.lower().strip()
+    m = re.fullmatch(r"bb\s*(\d+)", t) or re.fullmatch(r"(\d+)\s*bb", t)
+    if not m:
+        return None
+    nombre = int(m.group(1))
+    return ("t1", nombre, "reserve")
+
+
 def detecter_ca_tire(texte):
     """Détecte 'ça tire t1' / 'ça tire t2' (avec ou sans accent/espace),
     pour signaler un rythme soutenu sans donner de nombre précis."""
@@ -2128,7 +2118,7 @@ def traiter_commandes(vols, trains=None):
                     continue
 
                 # Message libre : on tente de le lire comme un signalement de voitures
-                resultat = detecter_format_court_lineaire(texte) or parser_position(texte)
+                resultat = detecter_format_court_lineaire(texte) or detecter_bb_babel(texte) or parser_position(texte)
                 if resultat == "ambigu":
                     repondre_telegram(chat_id, "Précise le terminal : par exemple '3 linéaire t1' ou '3 linéaire t2'.")
                 elif resultat:
