@@ -1371,8 +1371,34 @@ def clavier_nombres(loc):
                         {"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
     if loc == "t1_babel":
         lignes.append([{"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
+        lignes.append([{"text": "⬇️ Descente", "callback_data": f"descente:{loc}"}])
     lignes.append([{"text": "✏️ Autre nombre", "callback_data": f"custom:{loc}"}])
     lignes.append([{"text": "⬅️ Retour", "callback_data": "loc:retour"}])
+    return {"inline_keyboard": lignes}
+
+
+def texte_descente_babel(qui, nombre_restant):
+    if nombre_restant > 0:
+        return (
+            f"⬇️ <b>{qui} descend de Babel pour le linéaire</b>\n"
+            f"Il reste <b>{nombre_restant}</b> taxi(s) à Babel."
+        )
+    return f"⬇️ <b>{qui} descend de Babel</b>\nBabel est vide !"
+
+
+def clavier_descente(loc):
+    """Clavier affiché après un tap sur '⬇️ Descente' : demande combien de taxis
+    restent à Babel une fois que la personne en est descendue."""
+    lignes, ligne = [], []
+    for i, n in enumerate(NOMBRES_RAPIDES, start=1):
+        ligne.append({"text": str(n), "callback_data": f"desccnt:{loc}:{n}"})
+        if i % 5 == 0:
+            lignes.append(ligne)
+            ligne = []
+    if ligne:
+        lignes.append(ligne)
+    lignes.append([{"text": "✏️ Autre nombre", "callback_data": f"desccustom:{loc}"}])
+    lignes.append([{"text": "⬅️ Retour", "callback_data": f"descretour:{loc}"}])
     return {"inline_keyboard": lignes}
 
 
@@ -1435,16 +1461,17 @@ def repondre_callback(callback_id, texte=None):
         logger.error(f"Erreur answerCallbackQuery: {e}")
 
 
-def envoyer_demande_nombre(chat_id, label):
+def envoyer_demande_nombre(chat_id, label, question=None):
     """Demande le nombre en réattachant explicitement le clavier fixe (au lieu de force_reply,
     qui remplace temporairement le clavier fixe et le fait parfois disparaître pour de bon
     une fois le message supprimé). Le message sera supprimé juste après traitement."""
+    texte = question or f"✏️ Tape le nombre pour {label} et envoie-le."
     try:
         r = requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
             data={
                 "chat_id": chat_id,
-                "text": f"✏️ Tape le nombre pour {label} et envoie-le.",
+                "text": texte,
                 "reply_markup": json.dumps(PERSISTENT_KEYBOARD),
             },
             timeout=15,
@@ -1655,7 +1682,58 @@ def traiter_callback(callback):
         label = LOC_LABELS.get(loc, loc)
         supprimer_message_telegram(chat_id, message_id)
         prompt_id = envoyer_demande_nombre(chat_id, label)
-        attente_nombre_personnalise[(chat_id, user_id)] = (terminal, mode, prompt_id)
+        attente_nombre_personnalise[(chat_id, user_id)] = (terminal, mode, prompt_id, "normal")
+        return
+
+    if data.startswith("descente:"):
+        loc = data.split(":", 1)[1]
+        repondre_callback(callback_id)
+        editer_message_telegram(
+            chat_id, message_id,
+            "🔢 Combien reste-t-il de taxis à Babel après ta descente ?",
+            clavier_descente(loc)
+        )
+        return
+
+    if data.startswith("descretour:"):
+        loc = data.split(":", 1)[1]
+        repondre_callback(callback_id)
+        label = LOC_LABELS.get(loc, loc)
+        editer_message_telegram(chat_id, message_id, f"🔢 Combien de voitures à {label} ?", clavier_nombres(loc))
+        return
+
+    if data.startswith("desccnt:"):
+        _, loc, nombre_str = data.split(":", 2)
+        try:
+            nombre = int(nombre_str)
+        except ValueError:
+            repondre_callback(callback_id)
+            return
+        terminal, mode = LOC_INFOS.get(loc, (None, None))
+        if terminal:
+            definir_position(terminal, nombre, mode, qui)
+            enregistrer_annonce(user_id_stats, qui)
+            repondre_callback(callback_id, "Enregistré ✅")
+            supprimer_message_telegram(chat_id, message_id)
+            repondre_telegram(chat_id, texte_descente_babel(qui, nombre), silencieux=False)
+        else:
+            repondre_callback(callback_id)
+        return
+
+    if data.startswith("desccustom:"):
+        loc = data.split(":", 1)[1]
+        terminal, mode = LOC_INFOS.get(loc, (None, None))
+        if not terminal:
+            repondre_callback(callback_id)
+            return
+        user_id = (callback.get("from") or {}).get("id")
+        repondre_callback(callback_id)
+        supprimer_message_telegram(chat_id, message_id)
+        prompt_id = envoyer_demande_nombre(
+            chat_id, None,
+            question="✏️ Combien reste-t-il de taxis à Babel ? Tape le nombre et envoie-le."
+        )
+        attente_nombre_personnalise[(chat_id, user_id)] = (terminal, mode, prompt_id, "descente")
         return
 
     repondre_callback(callback_id)
@@ -1996,7 +2074,7 @@ def traiter_commandes(vols, trains=None):
             if cle_attente in attente_nombre_personnalise:
                 m = re.search(r"\d+", texte)
                 if m:
-                    terminal, mode, prompt_id = attente_nombre_personnalise.pop(cle_attente)
+                    terminal, mode, prompt_id, type_action = attente_nombre_personnalise.pop(cle_attente)
                     nombre = int(m.group())
                     qui = (message.get("from") or {}).get("first_name", "quelqu'un")
                     definir_position(terminal, nombre, mode, qui)
@@ -2004,7 +2082,10 @@ def traiter_commandes(vols, trains=None):
                     supprimer_message_telegram(chat_id, message["message_id"])  # leur nombre tapé
                     if prompt_id:
                         supprimer_message_telegram(chat_id, prompt_id)  # la question posée
-                    repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>", silencieux=False)
+                    if type_action == "descente":
+                        repondre_telegram(chat_id, texte_descente_babel(qui, nombre), silencieux=False)
+                    else:
+                        repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>", silencieux=False)
                 else:
                     repondre_telegram(chat_id, "Envoie juste un nombre, ex: 12")
                 continue
