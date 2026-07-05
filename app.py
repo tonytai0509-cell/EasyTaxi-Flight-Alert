@@ -1179,15 +1179,33 @@ def ligne_alerte_vol(v, avec_sortie=False, avec_retard=False):
     return ligne
 
 
+def info_voitures_courte(terminal_num):
+    """Résumé court du dernier signalement pour ce terminal, avec précision d'emplacement
+    (Babel/Linéaire/Parking), à afficher à côté de T1/T2 dans les alertes."""
+    data = charger_file_attente()
+    info = data.get(f"t{terminal_num}", {"nombre": 0, "mode": None, "maj": None, "qui": None})
+    if not info.get("maj"):
+        return "(pas signalé)"
+    nb = info.get("nombre", 0)
+    mode = info.get("mode")
+    mins = minutes_depuis(info.get("maj"))
+    age = "à l'instant" if mins == 0 else f"{mins} min"
+    lieu = {"reserve": "Babel", "lineaire": "Linéaire", "parking": "Parking"}.get(mode)
+    prefixe = f"({lieu}) " if lieu else ""
+    if nb == "TIRE":
+        return f"{prefixe}⚡ rythme soutenu ({age})"
+    return f"{prefixe}· {nb} ({age})"
+
+
 def regrouper_par_terminal(liste_vols, formatter):
     """Regroupe une liste de vols par terminal (T1 puis T2), comme dans le résumé principal."""
     t1 = [v for v in liste_vols if str(v.get("terminal")) == "1"]
     t2 = [v for v in liste_vols if str(v.get("terminal")) == "2"]
     blocs = []
     if t1:
-        blocs.append("🔵 <b>T1</b>\n" + "\n".join(formatter(v) for v in t1))
+        blocs.append(f"🔵 <b>T1</b> {info_voitures_courte('1')}\n" + "\n".join(formatter(v) for v in t1))
     if t2:
-        blocs.append("🟣 <b>T2</b>\n" + "\n".join(formatter(v) for v in t2))
+        blocs.append(f"🟣 <b>T2</b> {info_voitures_courte('2')}\n" + "\n".join(formatter(v) for v in t2))
     return "\n".join(blocs)
 
 
