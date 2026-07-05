@@ -131,6 +131,11 @@ vols_cache = []
 derniere_maj_site = None
 dernier_resume = None
 
+# ---- Anti-régression de statut : un vol qui a déjà été vu "en approche" ou "posé"
+# ne doit jamais redescendre à "en route"/"prévu" au scan suivant, même si le site
+# aéroport se contredit (donnée bruitée côté source, pas la réalité du vol) ----
+meilleur_statut_vu = {}  # cle_vol -> (niveau, site_status)
+
 approches_deja_annoncees = set()
 poses_deja_annonces = set()
 retards_deja_annonces = {}
@@ -228,6 +233,36 @@ def est_en_route(status):
 
 def est_arrive_ou_approche(status):
     return est_pose(status) or est_approche(status)
+
+
+def niveau_progression(status):
+    """Ordonne les statuts pour empêcher un vol de 'reculer' : posé > approche > en route > prévu.
+    Un statut annulé n'entre pas dans cette progression (traité séparément)."""
+    if est_pose(status):
+        return 3
+    if est_approche(status):
+        return 2
+    if est_en_route(status):
+        return 1
+    return 0
+
+
+def appliquer_ratchet_statuts(vols):
+    """Empêche un vol de redescendre de statut (ex: 'en approche' -> 'en route') entre deux scans,
+    ce qui arrive quand le site aéroport se contredit d'un scan à l'autre (donnée bruitée),
+    pas parce que le vol a vraiment reculé. Une fois annulé, le statut reste annulé."""
+    for v in vols:
+        status = v.get("site_status")
+        if est_annule(status):
+            continue  # annulation traitée à part, pas de ratchet dessus
+        cle = cle_vol(v)
+        niveau_actuel = niveau_progression(status)
+        precedent = meilleur_statut_vu.get(cle)
+        if precedent is None or niveau_actuel >= precedent[0]:
+            meilleur_statut_vu[cle] = (niveau_actuel, status)
+        else:
+            v["site_status"] = precedent[1]
+    return vols
 
 
 def statut_lisible(v):
@@ -547,7 +582,7 @@ def mettre_a_jour_cache_si_besoin(force=False):
 
     if force or derniere_maj_site is None or (maintenant() - derniere_maj_site).total_seconds() >= FREQUENCE_SITE_SECONDES:
         try:
-            vols_cache = recuperer_vols_site()
+            vols_cache = appliquer_ratchet_statuts(recuperer_vols_site())
             derniere_maj_site = maintenant()
             _verifier_watchdog_site(vols_cache)
             nb_t1 = sum(1 for v in vols_cache if v.get("terminal") == "1")
@@ -879,6 +914,7 @@ def nettoyer_caches_si_besoin():
     poses_deja_annonces.clear()
     retards_deja_annonces.clear()
     annules_deja_annonces.clear()
+    meilleur_statut_vu.clear()
 
     trains_approche_annonces.clear()
     trains_arrives_annonces.clear()
@@ -992,6 +1028,29 @@ def bloc_trains(trains):
     return f"🚄 <b>Trains (30 min)</b>\n\n<code>{corps}</code>\n"
 
 
+def bloc_etat_voitures():
+    """Version compacte de l'état des terminaux, pour intégration dans le résumé périodique
+    (pas de titre lourd, juste les deux lignes T1/T2)."""
+    data = charger_file_attente()
+    lignes = []
+    for terminal in ("t1", "t2"):
+        info = data.get(terminal, {"nombre": 0, "mode": None, "maj": None, "qui": None})
+        nb = info.get("nombre", 0)
+        mode = info.get("mode")
+        mins = minutes_depuis(info.get("maj"))
+        if mins is None:
+            age = "jamais signalé"
+        elif mins == 0:
+            age = "à l'instant"
+        else:
+            age = f"il y a {mins} min"
+        if nb == "TIRE":
+            lignes.append(f"{label_position(terminal, mode)} : ⚡ <b>Rythme soutenu</b> ({age})")
+        else:
+            lignes.append(f"{label_position(terminal, mode)} : <b>{nb}</b> ({age})")
+    return "🚕 <b>Voitures aux terminaux</b>\n" + "\n".join(lignes)
+
+
 def creer_resume(vols, trains=None):
     d30 = vols_dans_minutes(vols, 30)
     d60 = vols_dans_minutes(vols, 60)
@@ -1005,10 +1064,11 @@ def creer_resume(vols, trains=None):
     blocs = [
         f"✈️ <b>EASYTAXI FLIGHT ALERT</b>\n🕒 {maintenant().strftime('%H:%M')}",
         f"🚖 {label_affluence} demande {emoji_affluence} ({len(retards)})",
+        bloc_etat_voitures(),
         f"✈️ En approche : {len(approches)}\n✅ Posés : {len(poses)}",
         f"<b>🟢 Dans 30 min : {len(d30)} vols</b>\n🟣 Dans 1 h : {len(d60)} vols",
-        bloc_terminal("🔵 T1", t1_30).strip(),
-        bloc_terminal("🟣 T2", t2_30).strip(),
+        bloc_terminal("🔵 T1 · 30 min", t1_30).strip(),
+        bloc_terminal("🟣 T2 · 30 min", t2_30).strip(),
     ]
 
     if trains:
