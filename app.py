@@ -40,7 +40,7 @@ PARIS = ZoneInfo("Europe/Paris")
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
     raise SystemExit("TELEGRAM_TOKEN et TELEGRAM_CHAT_ID doivent être définis en variables d'environnement.")
 
-URL_SITE_AEROPORT = "https://www.nice.aeroport.fr/en/flights/arrivals"
+URL_ESI_VOLS = "https://www.nice.aeroport.fr/en/esi/flights/rows"
 
 # Site officiel de l'aéroport = gratuit, seule source utilisée pour les vols
 FREQUENCE_SITE_SECONDES = 60
@@ -374,40 +374,54 @@ def premiere_ligne_cellule(cellule):
 
 
 def recuperer_vols_site():
-    """Parse directement les lignes <tr>/<td> du tableau HTML du site aéroport,
-    plutôt que d'aplatir toute la page en texte et deviner les frontières de blocs.
-    Ça évite qu'un vol en codeshare (plusieurs compagnies/n° de vol empilés dans
-    une cellule) ne décale la lecture des vols suivants et leur attribue le mauvais
-    terminal — chaque <tr> reste toujours associé à son propre terminal, quelle
-    que soit la taille des cellules provenance/compagnie/numéro."""
-    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/13.0"}
-    r = requests.get(URL_SITE_AEROPORT, headers=headers, timeout=25)
+    """Récupère TOUS les vols de la journée (00h05 à 23h35) via l'endpoint ESI
+    utilisé par le site lui-même pour charger ses tranches horaires — la page
+    /en/flights/arrivals classique ne renvoie que les 15 premiers résultats.
+
+    Le parsing s'appuie sur les classes HTML stables du site (js-flight-time,
+    js-terminal) plutôt que de deviner sur du texte à plat : chaque <tr> reste
+    associé à son propre terminal, même quand une cellule contient plusieurs
+    compagnies/n° de vol empilés (codeshare) — seul le premier (vol principal)
+    est retenu, et le doublon caché mobile ('show-for-small-only') est ignoré
+    puisqu'on cible explicitement le <div class="item"> visible pour la ville."""
+    aujourdhui = maintenant().strftime("%Y%m%d")
+    url = f"{URL_ESI_VOLS}?direction=A&terminal=All&date={aujourdhui}"
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/14.0"}
+    r = requests.get(url, headers=headers, timeout=25)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
-    table = soup.find("table")
-    if not table:
-        return []
-
     vols = []
-    for tr in table.find_all("tr"):
-        cellules = tr.find_all(["td", "th"])
-        if len(cellules) < 5:
-            continue  # ligne d'en-tête ou ligne incomplète
+    for cellule_heure in soup.find_all("td", class_="js-flight-time"):
+        tr = cellule_heure.find_parent("tr")
+        if not tr:
+            continue
 
-        heure = nettoyer(cellules[0].get_text(" ", strip=True))
-        if not est_heure(heure):
-            continue  # pas une ligne de vol (en-tête, séparateur, etc.)
+        try:
+            h = int(cellule_heure.get("data-hour"))
+            m = int(cellule_heure.get("data-min"))
+        except (TypeError, ValueError):
+            continue
+        heure = f"{h:02d}:{m:02d}"
 
-        ville = nettoyer_nom(premiere_ligne_cellule(cellules[1]))
-        compagnie = nettoyer_compagnie(premiere_ligne_cellule(cellules[2])) if len(cellules) > 2 else "N/A"
-        numero = premiere_ligne_cellule(cellules[3]).replace(" ", "") if len(cellules) > 3 else "N/A"
-        terminal = normaliser_terminal(cellules[4].get_text(" ", strip=True)) if len(cellules) > 4 else None
-
+        cellule_terminal = tr.find("td", class_="js-terminal")
+        terminal = normaliser_terminal(cellule_terminal.get_text(strip=True)) if cellule_terminal else None
         if terminal not in ("1", "2"):
             continue
 
-        status_brut = nettoyer(cellules[5].get_text(" ", strip=True)) if len(cellules) > 5 else ""
+        cellules = tr.find_all("td")
+
+        div_ville = cellules[1].find("div", class_="item") if len(cellules) > 1 else None
+        ville = nettoyer_nom(div_ville.get_text(strip=True)) if div_ville else "N/A"
+
+        p_compagnie = cellules[2].find("p") if len(cellules) > 2 else None
+        compagnie = nettoyer_compagnie(p_compagnie.get_text(strip=True)) if p_compagnie else "N/A"
+
+        p_numero = cellules[3].find("p") if len(cellules) > 3 else None
+        numero = p_numero.get_text(strip=True).replace(" ", "") if p_numero else "N/A"
+
+        p_status = cellules[5].find("p") if len(cellules) > 5 else None
+        status_brut = nettoyer(p_status.get_text(strip=True)) if p_status else ""
         status = statut_site_lisible(status_brut) if status_brut else "Expected"
 
         heure_status = extraire_heure(status)
