@@ -71,6 +71,7 @@ SNCF_API_TOKEN = os.getenv("SNCF_API_TOKEN")
 SNCF_GARE_NOM = os.getenv("SNCF_GARE_NOM", "Nice Ville")
 SNCF_STOP_AREA_ID = os.getenv("SNCF_STOP_AREA_ID")  # optionnel : évite une résolution auto si déjà connu
 SNCF_INCLURE_OUIGO = os.getenv("SNCF_INCLURE_OUIGO", "true").lower() == "true"
+SNCF_INCLURE_TER = os.getenv("SNCF_INCLURE_TER", "true").lower() == "true"
 FREQUENCE_SNCF_SECONDES = int(os.getenv("FREQUENCE_SNCF_SECONDES", "180"))  # 3 min, large quota donc pas besoin d'économiser
 RETARD_TRAIN_IMPORTANT_MINUTES = int(os.getenv("RETARD_TRAIN_IMPORTANT_MINUTES", "15"))
 APPROCHE_TRAIN_MINUTES = int(os.getenv("APPROCHE_TRAIN_MINUTES", "10"))
@@ -578,10 +579,13 @@ def resoudre_gare_sncf():
     return _stop_area_id_resolu
 
 
-def est_tgv(commercial_mode):
+def est_train_suivi(commercial_mode):
+    """Détermine si ce train doit être suivi par le bot (TGV, OUIGO, TER selon réglages)."""
     cm = (commercial_mode or "").upper()
     if "OUIGO" in cm:
         return SNCF_INCLURE_OUIGO
+    if "TER" in cm:
+        return SNCF_INCLURE_TER
     return "TGV" in cm
 
 
@@ -635,7 +639,7 @@ def recuperer_arrivees_sncf():
         stop_dt = item.get("stop_date_time", {}) or {}
 
         commercial_mode = infos.get("commercial_mode", "")
-        if not est_tgv(commercial_mode):
+        if not est_train_suivi(commercial_mode):
             continue
 
         dt_prevu = parse_datetime_sncf(stop_dt.get("base_arrival_date_time"))
@@ -792,22 +796,22 @@ def envoyer_alertes_trains(trains):
 
     if nouveaux_annules:
         lignes = "\n".join(f"• {t['prevu']} Train {t['numero']}" for t in nouveaux_annules)
-        titre = "TGV ANNULÉ" if len(nouveaux_annules) == 1 else f"TGV ANNULÉS ({len(nouveaux_annules)})"
+        titre = "TRAIN ANNULÉ" if len(nouveaux_annules) == 1 else f"TRAINS ANNULÉS ({len(nouveaux_annules)})"
         sections.append(f"❌ <b>{titre}</b>\n{lignes}")
 
     if nouvelles_approches:
         lignes = "\n".join(f"• {heure_lisible_train(t)} Train {t['numero']}" for t in nouvelles_approches)
-        titre = "TGV EN APPROCHE" if len(nouvelles_approches) == 1 else f"TGV EN APPROCHE ({len(nouvelles_approches)})"
+        titre = "TRAIN EN APPROCHE" if len(nouvelles_approches) == 1 else f"TRAINS EN APPROCHE ({len(nouvelles_approches)})"
         sections.append(f"🚄 <b>{titre}</b>\n{lignes}")
 
     if nouveaux_arrives:
         lignes = "\n".join(f"• {t['actuel']} Train {t['numero']}" for t in nouveaux_arrives)
-        titre = "TGV ARRIVÉ" if len(nouveaux_arrives) == 1 else f"TGV ARRIVÉS ({len(nouveaux_arrives)})"
+        titre = "TRAIN ARRIVÉ" if len(nouveaux_arrives) == 1 else f"TRAINS ARRIVÉS ({len(nouveaux_arrives)})"
         sections.append(f"✅ <b>{titre}</b>\n{lignes}")
 
     if nouveaux_retards:
         lignes = "\n".join(f"• {heure_lisible_train(t)} Train {t['numero']} (+{t['retard']}min)" for t in nouveaux_retards)
-        titre = "RETARD TGV" if len(nouveaux_retards) == 1 else f"RETARDS TGV ({len(nouveaux_retards)})"
+        titre = "RETARD TRAIN" if len(nouveaux_retards) == 1 else f"RETARDS TRAINS ({len(nouveaux_retards)})"
         sections.append(f"⏰ <b>{titre}</b>\n{lignes}")
 
     if sections:
@@ -945,7 +949,7 @@ def bloc_trains(trains):
     if not trains:
         return ""
     corps = "\n".join(ligne_train(t) for t in trains[:8])
-    return f"🚄 <b>TGV (30 min)</b>\n\n<code>{corps}</code>\n"
+    return f"🚄 <b>Trains (30 min)</b>\n\n<code>{corps}</code>\n"
 
 
 def creer_resume(vols, trains=None):
@@ -1593,12 +1597,12 @@ def commande_vol(vols, numero):
 
 def commande_tgv(trains):
     if not SNCF_API_TOKEN:
-        return "🚄 Module TGV pas encore activé (token SNCF manquant)."
+        return "🚄 Module trains pas encore activé (token SNCF manquant)."
     filtres = trains_dans_minutes(trains, 60)
     if not filtres:
-        return "Aucun TGV prévu à Nice-Ville dans l'heure (données cache)."
+        return "Aucun train prévu à Nice-Ville dans l'heure (données cache)."
     corps = "\n".join(ligne_train(t) for t in filtres[:10])
-    return f"🚄 <b>TGV Nice-Ville</b> (1h)\n<code>{corps}</code>"
+    return f"🚄 <b>Trains Nice-Ville</b> (1h)\n<code>{corps}</code>"
 
 
 # =========================
@@ -1822,7 +1826,7 @@ def commande_aide():
         "<code>/t1</code>  Terminal 1 (1h) · <code>/t1+</code> (3h)\n"
         "<code>/t2</code>  Terminal 2 (1h) · <code>/t2+</code> (3h)\n"
         "<code>/vol NUMERO</code>  Chercher un vol précis\n"
-        "<code>/tgv</code>  Prochains TGV Nice-Ville (1h)\n"
+        "<code>/tgv</code>  Prochains trains Nice-Ville, TGV/TER (1h)\n"
         "<code>/etat</code>  Voitures aux terminaux\n"
         "<code>/top</code>  🏆 Top 5 des annonces du jour\n"
         f"{ligne}\n\n"
@@ -2050,9 +2054,9 @@ def boucle_principale():
         "Source vols : site officiel de l'aéroport (gratuit) + commandes /aide."
     )
     if SNCF_API_TOKEN:
-        message_demarrage += f"\n🚄 Module TGV activé (gare : {SNCF_GARE_NOM})."
+        message_demarrage += f"\n🚄 Module trains activé (TGV + TER, gare : {SNCF_GARE_NOM})."
     else:
-        message_demarrage += "\n🚄 Module TGV désactivé (SNCF_API_TOKEN manquant)."
+        message_demarrage += "\n🚄 Module trains désactivé (SNCF_API_TOKEN manquant)."
     envoyer_telegram(message_demarrage)
     envoyer_clavier_permanent(TELEGRAM_CHAT_ID)
 
