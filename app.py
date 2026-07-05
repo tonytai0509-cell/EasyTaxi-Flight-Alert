@@ -306,7 +306,9 @@ def sortie_passagers(v):
         debut = base_time + timedelta(minutes=12)
         fin = base_time + timedelta(minutes=22)
 
-    return f"🚖 Sortie clients estimée : {debut.strftime('%H:%M')} - {fin.strftime('%H:%M')}"
+    debut_str = debut.strftime("%H:%M")
+    fin_str = fin.strftime("%H:%M")
+    return "🚖 Sortie clients estimée : " + debut_str + " - " + fin_str
 
 
 def envoyer_telegram(message, silencieux=False):
@@ -1052,9 +1054,10 @@ def creer_resume(vols, trains=None):
     poses = [v for v in d30 if est_pose(v.get("site_status") or v.get("live_status") or v.get("status"))]
     retards = [v for v in d60 if v["retard"] >= RETARD_IMPORTANT_MINUTES and not est_arrive_ou_approche(v.get("site_status") or v.get("live_status") or v.get("status"))]
     label_affluence, emoji_affluence = niveau_affluence(len(d30))
+    heure_resume_str = maintenant().strftime("%H:%M")
 
     blocs = [
-        f"✈️ <b>EASYTAXI FLIGHT ALERT</b>\n🕒 {maintenant().strftime('%H:%M')}",
+        "✈️ <b>EASYTAXI FLIGHT ALERT</b>\n🕒 " + heure_resume_str,
     ]
     if evenement_du_jour_cache:
         blocs.append(evenement_du_jour_cache)
@@ -1171,7 +1174,9 @@ def ligne_alerte_vol(v, avec_sortie=False, avec_retard=False):
             debut, fin = base_time + timedelta(minutes=10), base_time + timedelta(minutes=18)
         else:
             debut, fin = base_time + timedelta(minutes=12), base_time + timedelta(minutes=22)
-        ligne += f"\n  🚶 {debut.strftime('%H:%M')}-{fin.strftime('%H:%M')}"
+        debut_str = debut.strftime("%H:%M")
+        fin_str = fin.strftime("%H:%M")
+        ligne += "\n  🚶 " + debut_str + "-" + fin_str
     return ligne
 
 
@@ -1464,9 +1469,11 @@ def _evenement_est_aujourdhui(evt):
 
 
 def _formater_ligne_evenement(evt, ville):
+    titre = evt["titre"]
     if evt["debut"] == evt["fin"]:
-        return f"🎫 Événement : {evt['titre']} ({ville})"
-    return f"🎫 Événement : {evt['titre']} ({ville}, jusqu'au {evt['fin'].strftime('%d/%m')})"
+        return "🎫 Événement : " + titre + " (" + ville + ")"
+    fin_str = evt["fin"].strftime("%d/%m")
+    return "🎫 Événement : " + titre + " (" + ville + ", jusqu'au " + fin_str + ")"
 
 
 def mettre_a_jour_evenements_si_besoin(force=False):
@@ -2592,9 +2599,4 @@ def envoyer_resume_matin_si_besoin(vols):
 
 
 
-def boucle_principale():
-    global dernier_resume, dernier_slot_resume, dernier_envoi_alertes_nuit
-    init_db()
-    message_demarrage = (
-        "🔄 <b>EasyTaxi Flight Alert redémarré</b> — mise à jour déployée\n"
-        f"({maintenant
+def boucle_principale(
