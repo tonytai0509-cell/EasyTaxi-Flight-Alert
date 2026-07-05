@@ -2258,16 +2258,16 @@ def boucle_principale():
     global dernier_resume, dernier_slot_resume, dernier_envoi_alertes_nuit
     init_db()
     message_demarrage = (
-        "🔄 <b>EasyTaxi Flight Alert redémarré</b>\n"
+        "🔄 <b>EasyTaxi Flight Alert redémarré</b> — mise à jour déployée\n"
         f"({maintenant().strftime('%d/%m à %H:%M')})\n\n"
-        "Source vols : site officiel de l'aéroport (gratuit) + commandes /aide."
+        "📡 Source vols : site officiel de l'aéroport — endpoint intégré et optimisé par Tony"
     )
     if SNCF_API_TOKEN:
         message_demarrage += f"\n🚄 Module trains activé (TGV + TER, gare : {SNCF_GARE_NOM})."
     else:
         message_demarrage += "\n🚄 Module trains désactivé (SNCF_API_TOKEN manquant)."
+    message_demarrage += "\n🔒 Hébergement privé sécurisé"
     envoyer_telegram(message_demarrage, silencieux=True)
-    envoyer_clavier_permanent(TELEGRAM_CHAT_ID)
 
     # Fin de la période de grâce : pendant les 90s qui suivent un redémarrage,
     # aucune alerte ni résumé automatique n'est envoyé (seul le message ci-dessus part),
@@ -2344,15 +2344,28 @@ def boucle_commandes():
     while True:
         try:
             traiter_commandes(vols_cache, trains_cache)
-            verifier_expiration_menus()
         except Exception as e:
             logger.error(f"Erreur boucle commandes: {e}")
             time.sleep(1)
 
 
+def boucle_expiration_menus():
+    """Vérifie l'expiration des menus 'Choisis l'emplacement' sur un minuteur indépendant.
+    Le long-polling Telegram (boucle_commandes) peut rester bloqué jusqu'à 20s en attendant
+    un message ; si la vérification tournait dans cette même boucle, elle serait retardée
+    d'autant, et le menu resterait affiché bien plus longtemps que MENU_TIMEOUT_SECONDES."""
+    while True:
+        try:
+            verifier_expiration_menus()
+        except Exception as e:
+            logger.error(f"Erreur boucle expiration menus: {e}")
+        time.sleep(1)
+
+
 def main():
     """Supervisor : si boucle_principale plante malgré tout, on redémarre au lieu de mourir."""
     threading.Thread(target=boucle_commandes, daemon=True).start()
+    threading.Thread(target=boucle_expiration_menus, daemon=True).start()
     while True:
         try:
             boucle_principale()
