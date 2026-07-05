@@ -786,9 +786,9 @@ def heure_lisible_train(t):
 def ligne_train(t):
     heure = heure_lisible_train(t)
     type_train = type_court(t.get("type"))
-    provenance = html.escape((t.get("provenance") or "")[:14])
-    numero = html.escape((t.get("numero") or "")[:6])
-    return f"{heure:<12} {type_train:<5} {provenance:<15} {numero:<7} {icone_train(t)}"
+    marqueur = "⭐" if type_train == "TGV" else "‧"
+    provenance = html.escape((t.get("provenance") or "")[:10])
+    return f"{marqueur}{heure:<6}{type_train:<5}{provenance:<11}{icone_train(t)}"
 
 
 def trains_dans_minutes(trains, minutes):
@@ -798,6 +798,12 @@ def trains_dans_minutes(trains, minutes):
 
 
 def envoyer_alertes_trains(trains):
+    # Alertes automatiques (approche/arrivé/retard/annulé) : uniquement pour les TGV.
+    # Les TER (ZOU!) passent trop souvent (toutes les 10 min environ) pour être
+    # signalés individuellement sans spammer le groupe. Ils restent visibles
+    # via /sncf et le résumé périodique, juste pas en alerte push.
+    trains = [t for t in trains if type_court(t.get("type")) == "TGV"]
+
     nouveaux_annules, nouvelles_approches, nouveaux_arrives, nouveaux_retards = [], [], [], []
 
     for t in trains:
@@ -1626,7 +1632,7 @@ def commande_vol(vols, numero):
     return f"Vol {numero} introuvable dans les données actuelles."
 
 
-def commande_tgv(trains):
+def commande_sncf(trains):
     if not SNCF_API_TOKEN:
         return "🚄 Module trains pas encore activé (token SNCF manquant)."
     filtres = trains_dans_minutes(trains, 60)
@@ -1857,7 +1863,7 @@ def commande_aide():
         "<code>/t1</code>  Terminal 1 (1h) · <code>/t1+</code> (3h)\n"
         "<code>/t2</code>  Terminal 2 (1h) · <code>/t2+</code> (3h)\n"
         "<code>/vol NUMERO</code>  Chercher un vol précis\n"
-        "<code>/tgv</code>  Prochains trains Nice-Ville, TGV/TER (1h)\n"
+        "<code>/sncf</code>  Prochains trains Nice-Ville, TGV/TER (1h)\n"
         "<code>/etat</code>  Voitures aux terminaux\n"
         "<code>/top</code>  🏆 Top 5 des annonces du jour\n"
         f"{ligne}\n\n"
@@ -1983,8 +1989,8 @@ def traiter_commandes(vols, trains=None):
             repondre_telegram(chat_id, commande_terminal(vols, "2", minutes=180))
         elif commande in ("/vol", "/flight") and len(partie) > 1:
             repondre_telegram(chat_id, commande_vol(vols, partie[1]))
-        elif commande == "/tgv":
-            repondre_telegram(chat_id, commande_tgv(trains))
+        elif commande == "/sncf":
+            repondre_telegram(chat_id, commande_sncf(trains))
         elif commande == "/etat":
             repondre_telegram(chat_id, commande_etat_file())
         elif commande == "/vide":
