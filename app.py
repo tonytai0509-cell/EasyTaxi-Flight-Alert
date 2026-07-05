@@ -580,13 +580,28 @@ def resoudre_gare_sncf():
 
 
 def est_train_suivi(commercial_mode):
-    """Détermine si ce train doit être suivi par le bot (TGV, OUIGO, TER selon réglages)."""
+    """Détermine si ce train doit être suivi par le bot (TGV, OUIGO, TER selon réglages).
+    ZOU! est le nom commercial des TER en région PACA — on le traite comme un TER."""
     cm = (commercial_mode or "").upper()
     if "OUIGO" in cm:
         return SNCF_INCLURE_OUIGO
-    if "TER" in cm:
+    if "TER" in cm or "ZOU" in cm:
         return SNCF_INCLURE_TER
-    return "TGV" in cm
+    if "TGV" in cm or "INOUI" in cm:
+        return True
+    return False
+
+
+def type_court(commercial_mode):
+    """Renvoie une étiquette courte TER / TGV / OUIGO à afficher dans les messages."""
+    cm = (commercial_mode or "").upper()
+    if "OUIGO" in cm:
+        return "OUIGO"
+    if "TER" in cm or "ZOU" in cm:
+        return "TER"
+    if "TGV" in cm or "INOUI" in cm:
+        return "TGV"
+    return cm[:5] if cm else "?"
 
 
 def parse_datetime_sncf(value):
@@ -639,6 +654,13 @@ def recuperer_arrivees_sncf():
         stop_dt = item.get("stop_date_time", {}) or {}
 
         commercial_mode = infos.get("commercial_mode", "")
+        # Log de diagnostic : montre la vraie valeur envoyée par l'API pour CHAQUE train,
+        # même ceux qui seront filtrés ci-dessous. Utile si un nouveau type de train
+        # (autre réseau, autre libellé) apparaît un jour et doit être ajouté au filtre.
+        logger.info(
+            f"SNCF RAW: commercial_mode={commercial_mode!r} "
+            f"network={infos.get('network')!r} headsign={infos.get('headsign')!r}"
+        )
         if not est_train_suivi(commercial_mode):
             continue
 
@@ -713,7 +735,7 @@ def mettre_a_jour_cache_trains_si_besoin(force=False):
         logger.info(f"SNCF: {len(trains_cache)} trains trouvés")
         for t in trains_cache:
             logger.info(
-                f"  DETAIL train: numero={t.get('numero')!r} provenance={t.get('provenance')!r} "
+                f"  DETAIL train: numero={t.get('numero')!r} type={t.get('type')!r} provenance={t.get('provenance')!r} "
                 f"prevu={t.get('prevu')!r} actuel={t.get('actuel')!r} "
                 f"dt_actuel={t.get('dt_actuel')!r} annule={t.get('annule')!r}"
             )
@@ -763,9 +785,10 @@ def heure_lisible_train(t):
 
 def ligne_train(t):
     heure = heure_lisible_train(t)
-    provenance = html.escape((t.get("provenance") or "")[:16])
+    type_train = type_court(t.get("type"))
+    provenance = html.escape((t.get("provenance") or "")[:14])
     numero = html.escape((t.get("numero") or "")[:6])
-    return f"{heure:<12} {provenance:<17} {numero:<7} {icone_train(t)}"
+    return f"{heure:<12} {type_train:<5} {provenance:<15} {numero:<7} {icone_train(t)}"
 
 
 def trains_dans_minutes(trains, minutes):
@@ -803,22 +826,22 @@ def envoyer_alertes_trains(trains):
     sections = []
 
     if nouveaux_annules:
-        lignes = "\n".join(f"• {t['prevu']} Train {t['numero']}" for t in nouveaux_annules)
+        lignes = "\n".join(f"• {t['prevu']} {type_court(t.get('type'))} {t['numero']}" for t in nouveaux_annules)
         titre = "TRAIN ANNULÉ" if len(nouveaux_annules) == 1 else f"TRAINS ANNULÉS ({len(nouveaux_annules)})"
         sections.append(f"❌ <b>{titre}</b>\n{lignes}")
 
     if nouvelles_approches:
-        lignes = "\n".join(f"• {heure_lisible_train(t)} Train {t['numero']}" for t in nouvelles_approches)
+        lignes = "\n".join(f"• {heure_lisible_train(t)} {type_court(t.get('type'))} {t['numero']}" for t in nouvelles_approches)
         titre = "TRAIN EN APPROCHE" if len(nouvelles_approches) == 1 else f"TRAINS EN APPROCHE ({len(nouvelles_approches)})"
         sections.append(f"🚄 <b>{titre}</b>\n{lignes}")
 
     if nouveaux_arrives:
-        lignes = "\n".join(f"• {t['actuel']} Train {t['numero']}" for t in nouveaux_arrives)
+        lignes = "\n".join(f"• {t['actuel']} {type_court(t.get('type'))} {t['numero']}" for t in nouveaux_arrives)
         titre = "TRAIN ARRIVÉ" if len(nouveaux_arrives) == 1 else f"TRAINS ARRIVÉS ({len(nouveaux_arrives)})"
         sections.append(f"✅ <b>{titre}</b>\n{lignes}")
 
     if nouveaux_retards:
-        lignes = "\n".join(f"• {heure_lisible_train(t)} Train {t['numero']} (+{t['retard']}min)" for t in nouveaux_retards)
+        lignes = "\n".join(f"• {heure_lisible_train(t)} {type_court(t.get('type'))} {t['numero']} (+{t['retard']}min)" for t in nouveaux_retards)
         titre = "RETARD TRAIN" if len(nouveaux_retards) == 1 else f"RETARDS TRAINS ({len(nouveaux_retards)})"
         sections.append(f"⏰ <b>{titre}</b>\n{lignes}")
 
