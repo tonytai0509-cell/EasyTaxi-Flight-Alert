@@ -700,6 +700,7 @@ def mettre_a_jour_cache_trains_si_besoin(force=False):
     global trains_cache, derniere_maj_trains
 
     if not SNCF_API_TOKEN:
+        logger.info("SNCF: module désactivé (SNCF_API_TOKEN absent)")
         return trains_cache  # module désactivé tant qu'aucun token n'est fourni
 
     if not force and derniere_maj_trains is not None and (maintenant() - derniere_maj_trains).total_seconds() < FREQUENCE_SNCF_SECONDES:
@@ -709,6 +710,13 @@ def mettre_a_jour_cache_trains_si_besoin(force=False):
         trains_cache = recuperer_arrivees_sncf()
         derniere_maj_trains = maintenant()
         _verifier_watchdog_sncf(True)
+        logger.info(f"SNCF: {len(trains_cache)} trains trouvés")
+        for t in trains_cache:
+            logger.info(
+                f"  DETAIL train: numero={t.get('numero')!r} provenance={t.get('provenance')!r} "
+                f"prevu={t.get('prevu')!r} actuel={t.get('actuel')!r} "
+                f"dt_actuel={t.get('dt_actuel')!r} annule={t.get('annule')!r}"
+            )
     except Exception as e:
         logger.warning(f"Erreur API SNCF: {e}")
         _verifier_watchdog_sncf(False)
