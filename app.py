@@ -1203,9 +1203,9 @@ def regrouper_par_terminal(liste_vols, formatter):
     t2 = [v for v in liste_vols if str(v.get("terminal")) == "2"]
     blocs = []
     if t1:
-        blocs.append(f"🔵 <b>T1</b> {info_voitures_courte('1')}\n" + "\n".join(formatter(v) for v in t1))
+        blocs.append(f"🔵 <b>T1</b> <i>{info_voitures_courte('1')}</i>\n" + "\n".join(formatter(v) for v in t1))
     if t2:
-        blocs.append(f"🟣 <b>T2</b> {info_voitures_courte('2')}\n" + "\n".join(formatter(v) for v in t2))
+        blocs.append(f"🟣 <b>T2</b> <i>{info_voitures_courte('2')}</i>\n" + "\n".join(formatter(v) for v in t2))
     return "\n".join(blocs)
 
 
