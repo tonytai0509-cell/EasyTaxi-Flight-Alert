@@ -46,6 +46,24 @@ URL_SITE_AEROPORT = "https://www.nice.aeroport.fr/en/flights/arrivals"
 FREQUENCE_SITE_SECONDES = 60
 
 FREQUENCE_RESUME_SECONDES = 1800
+
+# ---- Horaires fixes du gros résumé (13h00, 13h30, 14h00...) et pause nocturne ----
+# Pas de gros résumé entre 01:30 et 07:29 inclus ; reprise pile à 07:30.
+PAUSE_RESUME_HEURE_DEBUT = (1, 30)
+PAUSE_RESUME_HEURE_FIN = (7, 30)
+dernier_slot_resume = None
+
+# ---- Résumé spécial 23h (pour les plus courageux) : tout ce qui reste cette nuit,
+# retards inclus, jusqu'à 4h du matin (même après minuit) ----
+HEURE_RESUME_NUIT = 23
+dernier_resume_nuit_date = None
+
+# ---- Espacement des petites alertes (approche/posé/retard) la nuit : entre 2h et 7h,
+# on regroupe et n'envoie qu'toutes les 15 min au lieu d'en continu ----
+NUIT_ESPACEMENT_HEURE_DEBUT = 2
+NUIT_ESPACEMENT_HEURE_FIN = 7
+NUIT_ESPACEMENT_SECONDES = 15 * 60
+dernier_envoi_alertes_nuit = None
 RETARD_IMPORTANT_MINUTES = 20
 
 # ---- SNCF / TGV (API officielle gratuite, quota très généreux : 150k/mois) ----
@@ -1936,6 +1954,61 @@ def traiter_commandes(vols, trains=None):
 # RÉSUMÉ DU MATIN
 # =========================
 
+def en_pause_resume_fixe():
+    """True entre 01:30 et 07:29 inclus : pas de gros résumé pendant cette fenêtre."""
+    h, m = maintenant().hour, maintenant().minute
+    debut_h, debut_m = PAUSE_RESUME_HEURE_DEBUT
+    fin_h, fin_m = PAUSE_RESUME_HEURE_FIN
+    minutes_actuelles = h * 60 + m
+    minutes_debut = debut_h * 60 + debut_m
+    minutes_fin = fin_h * 60 + fin_m
+    return minutes_debut <= minutes_actuelles < minutes_fin
+
+
+def slot_demi_heure_actuel():
+    """Créneau fixe actuel (jour, heure, 0 ou 30), pour aligner le résumé sur
+    des horaires ronds (13h00, 13h30...) plutôt que sur un minuteur flottant."""
+    now = maintenant()
+    return (now.date(), now.hour, 0 if now.minute < 30 else 30)
+
+
+def creer_resume_nuit(vols):
+    """Résumé spécial 23h, pour les plus courageux : TOUS les vols restants de la nuit,
+    retards inclus, jusqu'à 4h du matin — même ceux après minuit."""
+    maintenant_dt = maintenant()
+    limite = maintenant_dt.replace(hour=4, minute=0, second=0, microsecond=0)
+    if limite <= maintenant_dt:
+        limite += timedelta(days=1)
+
+    restants = [
+        v for v in vols
+        if v.get("dt_actuel") and maintenant_dt <= v["dt_actuel"].astimezone(PARIS) <= limite
+        and not est_arrive_ou_approche(v.get("site_status"))
+    ]
+    restants.sort(key=lambda v: v["dt_actuel"])
+
+    if not restants:
+        return "🌙 <b>Résumé de nuit</b>\nAucun vol restant annoncé jusqu'à 4h du matin."
+
+    t1 = [v for v in restants if v["terminal"] == "1"]
+    t2 = [v for v in restants if v["terminal"] == "2"]
+
+    msg = f"🌙 <b>Résumé de nuit</b> — tous les vols restants jusqu'à 4h\n\n"
+    msg += bloc_terminal("🔵 Terminal 1", t1).strip()
+    msg += f"\n{SEPARATEUR_RESUME}\n\n"
+    msg += bloc_terminal("🟣 Terminal 2", t2).strip()
+    return msg
+
+
+def envoyer_resume_nuit_si_besoin(vols):
+    global dernier_resume_nuit_date
+    aujourdhui = maintenant().date()
+    if maintenant().hour != HEURE_RESUME_NUIT or dernier_resume_nuit_date == aujourdhui:
+        return
+    envoyer_telegram(creer_resume_nuit(vols))
+    dernier_resume_nuit_date = aujourdhui
+
+
 def envoyer_resume_matin_si_besoin(vols):
     global dernier_resume_matin
     aujourdhui = maintenant().date()
@@ -1953,7 +2026,7 @@ def envoyer_resume_matin_si_besoin(vols):
 
 
 def boucle_principale():
-    global dernier_resume
+    global dernier_resume, dernier_slot_resume, dernier_envoi_alertes_nuit
     init_db()
     message_demarrage = (
         "🔄 <b>EasyTaxi Flight Alert redémarré</b>\n"
@@ -1976,6 +2049,7 @@ def boucle_principale():
 
         envoyer_telegram(creer_resume(vols, trains))
         dernier_resume = maintenant()
+        dernier_slot_resume = slot_demi_heure_actuel()
     except Exception as e:
         logger.error(f"Erreur démarrage: {e}")
         envoyer_telegram(f"⚠️ Erreur démarrage : {e}")
@@ -1987,15 +2061,30 @@ def boucle_principale():
             verifier_expiration_volees()
 
             vols = mettre_a_jour_cache_si_besoin(force=False)
-            envoyer_alertes(vols)
-
             trains = mettre_a_jour_cache_trains_si_besoin(force=False)
-            envoyer_alertes_trains(trains)
+
+            # Petites alertes (approche/posé/retard/annulé) : envoi immédiat normalement,
+            # mais entre 2h et 7h du matin on les regroupe et espace toutes les 15 min
+            # pour ne pas multiplier les notifications nocturnes.
+            heure_actuelle = maintenant().hour
+            if NUIT_ESPACEMENT_HEURE_DEBUT <= heure_actuelle < NUIT_ESPACEMENT_HEURE_FIN:
+                if (dernier_envoi_alertes_nuit is None
+                        or (maintenant() - dernier_envoi_alertes_nuit).total_seconds() >= NUIT_ESPACEMENT_SECONDES):
+                    envoyer_alertes(vols)
+                    envoyer_alertes_trains(trains)
+                    dernier_envoi_alertes_nuit = maintenant()
+            else:
+                envoyer_alertes(vols)
+                envoyer_alertes_trains(trains)
 
             envoyer_resume_matin_si_besoin(vols)
+            envoyer_resume_nuit_si_besoin(vols)
             envoyer_stats_soir_si_besoin()
 
-            if dernier_resume is None or (maintenant() - dernier_resume).total_seconds() >= FREQUENCE_RESUME_SECONDES:
+            # Gros résumé : sur des créneaux fixes (13h00, 13h30, 14h00...),
+            # jamais entre 01:30 et 07:29 inclus.
+            slot_actuel = slot_demi_heure_actuel()
+            if not en_pause_resume_fixe() and slot_actuel != dernier_slot_resume:
                 d60 = vols_dans_minutes(vols, 60)
                 trains_60 = trains_dans_minutes(trains, 60) if trains else []
                 rien_a_signaler = len(d60) == 0 and len(trains_60) == 0
@@ -2004,6 +2093,7 @@ def boucle_principale():
                 else:
                     envoyer_telegram(creer_resume(vols, trains))
                 dernier_resume = maintenant()
+                dernier_slot_resume = slot_actuel
 
         except Exception as e:
             logger.error(f"Erreur boucle: {e}")
