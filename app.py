@@ -274,7 +274,7 @@ def sortie_passagers(v):
     return f"🚖 Sortie clients estimée : {debut.strftime('%H:%M')} - {fin.strftime('%H:%M')}"
 
 
-def envoyer_telegram(message):
+def envoyer_telegram(message, silencieux=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         r = requests.post(
@@ -284,6 +284,7 @@ def envoyer_telegram(message):
                 "text": message,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
+                "disable_notification": silencieux,
                 "reply_markup": json.dumps(PERSISTENT_KEYBOARD),  # re-rattache le bouton fixe à chaque envoi
             },
             timeout=20,
@@ -531,7 +532,8 @@ def _verifier_watchdog_site(vols_site):
             envoyer_telegram(
                 "🚨 <b>Alerte scraping</b>\n"
                 "Le site aéroport ne retourne plus aucun vol depuis plusieurs vérifications.\n"
-                "La structure de la page a peut-être changé — vérification manuelle recommandée."
+                "La structure de la page a peut-être changé — vérification manuelle recommandée.",
+                silencieux=True
             )
             alerte_watchdog_envoyee = True
     else:
@@ -710,7 +712,8 @@ def _verifier_watchdog_sncf(succes):
             envoyer_telegram(
                 "🚨 <b>Alerte SNCF</b>\n"
                 "L'API SNCF échoue depuis plusieurs vérifications.\n"
-                "Le module TGV est peut-être en panne (token expiré ?) — vérification manuelle recommandée."
+                "Le module TGV est peut-être en panne (token expiré ?) — vérification manuelle recommandée.",
+                silencieux=True
             )
             alerte_watchdog_sncf_envoyee = True
     else:
@@ -852,7 +855,7 @@ def envoyer_alertes_trains(trains):
         sections.append(f"⏰ <b>{titre}</b>\n{lignes}")
 
     if sections:
-        envoyer_telegram(encadrer_message("\n\n".join(sections)))
+        envoyer_telegram(encadrer_message("\n\n".join(sections)), silencieux=False)
 
 
 def vols_dans_minutes(vols, minutes):
@@ -1021,6 +1024,8 @@ def initialiser_sans_spam(vols):
     for v in vols:
         cle = cle_vol(v)
         status = v.get("site_status") or v.get("live_status") or v.get("status")
+        if est_annule(status):
+            annules_deja_annonces.add(cle)
         if est_approche(status):
             approches_deja_annoncees.add(cle)
         if est_pose(status):
@@ -1180,7 +1185,7 @@ def envoyer_alertes(vols):
         sections.append(f"⏰ <b>{titre}</b>\n{lignes}")
 
     if sections:
-        envoyer_telegram(encadrer_message("\n\n".join(sections)))
+        envoyer_telegram(encadrer_message("\n\n".join(sections)), silencieux=False)
 
 
 # =========================
@@ -1224,12 +1229,13 @@ def supprimer_message_telegram(chat_id, message_id):
         logger.error(f"Erreur suppression message Telegram: {e}")
 
 
-def repondre_telegram(chat_id, message):
+def repondre_telegram(chat_id, message, silencieux=True):
     try:
         requests.post(
             f"{TELEGRAM_API_URL}/sendMessage",
             data={
                 "chat_id": chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True,
+                "disable_notification": silencieux,
                 "reply_markup": json.dumps(PERSISTENT_KEYBOARD),  # re-rattache le bouton fixe à chaque envoi
             },
             timeout=15,
@@ -1326,6 +1332,7 @@ def envoyer_clavier_permanent(chat_id):
             data={
                 "chat_id": chat_id,
                 "text": "🚖 Appuie sur le bouton ci-dessous pour signaler des voitures, à tout moment.",
+                "disable_notification": True,
                 "reply_markup": json.dumps(PERSISTENT_KEYBOARD),
             },
             timeout=15,
@@ -1846,7 +1853,7 @@ def envoyer_stats_soir_si_besoin():
     aujourdhui = maintenant().date()
     if maintenant().hour != HEURE_STATS_SOIR or dernier_stats_soir == aujourdhui:
         return
-    envoyer_telegram(encadrer_message(commande_top_annonces()))
+    envoyer_telegram(encadrer_message(commande_top_annonces()), silencieux=True)
     dernier_stats_soir = aujourdhui
 
 
@@ -1937,7 +1944,7 @@ def traiter_commandes(vols, trains=None):
                     supprimer_message_telegram(chat_id, message["message_id"])  # leur nombre tapé
                     if prompt_id:
                         supprimer_message_telegram(chat_id, prompt_id)  # la question posée
-                    repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
+                    repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>", silencieux=False)
                 else:
                     repondre_telegram(chat_id, "Envoie juste un nombre, ex: 12")
                 continue
@@ -1956,7 +1963,8 @@ def traiter_commandes(vols, trains=None):
                         chat_id,
                         f"🟧 ⚡ <b>Rythme soutenu signalé à {label}</b>\n"
                         "Ça commence à tirer, restez prêts !\n"
-                        f"<i>Signalé par {qui}</i>"
+                        f"<i>Signalé par {qui}</i>",
+                        silencieux=False
                     )
                     continue
 
@@ -1971,7 +1979,7 @@ def traiter_commandes(vols, trains=None):
                     # Pas de comptage au classement /top pour le texte libre (moins fiable),
                     # seuls les boutons et le chiffre personnalisé comptent.
                     supprimer_message_telegram(chat_id, message["message_id"])
-                    repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>")
+                    repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : <b>{nombre}</b> voitures\n<i>Signalé par {qui}</i>", silencieux=False)
             continue
 
         partie = texte.split()
@@ -2062,7 +2070,7 @@ def envoyer_resume_nuit_si_besoin(vols):
     aujourdhui = maintenant().date()
     if maintenant().hour != HEURE_RESUME_NUIT or dernier_resume_nuit_date == aujourdhui:
         return
-    envoyer_telegram(creer_resume_nuit(vols))
+    envoyer_telegram(creer_resume_nuit(vols), silencieux=True)
     dernier_resume_nuit_date = aujourdhui
 
 
@@ -2075,7 +2083,8 @@ def envoyer_resume_matin_si_besoin(vols):
     envoyer_telegram(
         "☀️ <b>Bonjour !</b>\n"
         f"{len(d60)} vols attendus dans l'heure qui vient.\n"
-        "Bonne journée, le suivi reprend normalement 🚖"
+        "Bonne journée, le suivi reprend normalement 🚖",
+        silencieux=True
     )
     dernier_resume_matin = aujourdhui
 
@@ -2094,8 +2103,13 @@ def boucle_principale():
         message_demarrage += f"\n🚄 Module trains activé (TGV + TER, gare : {SNCF_GARE_NOM})."
     else:
         message_demarrage += "\n🚄 Module trains désactivé (SNCF_API_TOKEN manquant)."
-    envoyer_telegram(message_demarrage)
+    envoyer_telegram(message_demarrage, silencieux=True)
     envoyer_clavier_permanent(TELEGRAM_CHAT_ID)
+
+    # Fin de la période de grâce : pendant les 90s qui suivent un redémarrage,
+    # aucune alerte ni résumé automatique n'est envoyé (seul le message ci-dessus part),
+    # même si un créneau de résumé fixe (13h00, 13h30...) tombe pile à ce moment-là.
+    fin_grace_demarrage = maintenant() + timedelta(seconds=90)
 
     try:
         vols = mettre_a_jour_cache_si_besoin(force=True)
@@ -2104,12 +2118,11 @@ def boucle_principale():
         trains = mettre_a_jour_cache_trains_si_besoin(force=True)
         initialiser_sans_spam_trains(trains)
 
-        envoyer_telegram(creer_resume(vols, trains))
         dernier_resume = maintenant()
         dernier_slot_resume = slot_demi_heure_actuel()
     except Exception as e:
         logger.error(f"Erreur démarrage: {e}")
-        envoyer_telegram(f"⚠️ Erreur démarrage : {e}")
+        envoyer_telegram(f"⚠️ Erreur démarrage : {e}", silencieux=True)
         vols, trains = [], []
 
     while True:
@@ -2120,41 +2133,44 @@ def boucle_principale():
             vols = mettre_a_jour_cache_si_besoin(force=False)
             trains = mettre_a_jour_cache_trains_si_besoin(force=False)
 
+            en_periode_grace = maintenant() < fin_grace_demarrage
+
             # Petites alertes (approche/posé/retard/annulé) : envoi immédiat normalement,
             # mais entre 2h et 7h du matin on les regroupe et espace toutes les 15 min
             # pour ne pas multiplier les notifications nocturnes.
-            heure_actuelle = maintenant().hour
-            if NUIT_ESPACEMENT_HEURE_DEBUT <= heure_actuelle < NUIT_ESPACEMENT_HEURE_FIN:
-                if (dernier_envoi_alertes_nuit is None
-                        or (maintenant() - dernier_envoi_alertes_nuit).total_seconds() >= NUIT_ESPACEMENT_SECONDES):
+            if not en_periode_grace:
+                heure_actuelle = maintenant().hour
+                if NUIT_ESPACEMENT_HEURE_DEBUT <= heure_actuelle < NUIT_ESPACEMENT_HEURE_FIN:
+                    if (dernier_envoi_alertes_nuit is None
+                            or (maintenant() - dernier_envoi_alertes_nuit).total_seconds() >= NUIT_ESPACEMENT_SECONDES):
+                        envoyer_alertes(vols)
+                        envoyer_alertes_trains(trains)
+                        dernier_envoi_alertes_nuit = maintenant()
+                else:
                     envoyer_alertes(vols)
                     envoyer_alertes_trains(trains)
-                    dernier_envoi_alertes_nuit = maintenant()
-            else:
-                envoyer_alertes(vols)
-                envoyer_alertes_trains(trains)
 
-            envoyer_resume_matin_si_besoin(vols)
-            envoyer_resume_nuit_si_besoin(vols)
-            envoyer_stats_soir_si_besoin()
+                envoyer_resume_matin_si_besoin(vols)
+                envoyer_resume_nuit_si_besoin(vols)
+                envoyer_stats_soir_si_besoin()
 
             # Gros résumé : sur des créneaux fixes (13h00, 13h30, 14h00...),
-            # jamais entre 01:30 et 07:29 inclus.
+            # jamais entre 01:30 et 07:29 inclus, jamais pendant la période de grâce.
             slot_actuel = slot_demi_heure_actuel()
-            if not en_pause_resume_fixe() and slot_actuel != dernier_slot_resume:
+            if not en_periode_grace and not en_pause_resume_fixe() and slot_actuel != dernier_slot_resume:
                 d60 = vols_dans_minutes(vols, 60)
                 trains_60 = trains_dans_minutes(trains, 60) if trains else []
                 rien_a_signaler = len(d60) == 0 and len(trains_60) == 0
                 if _en_heures_creuses() and rien_a_signaler:
                     logger.info("Résumé périodique sauté (heures creuses, rien à signaler).")
                 else:
-                    envoyer_telegram(creer_resume(vols, trains))
+                    envoyer_telegram(creer_resume(vols, trains), silencieux=False)
                 dernier_resume = maintenant()
                 dernier_slot_resume = slot_actuel
 
         except Exception as e:
             logger.error(f"Erreur boucle: {e}")
-            envoyer_telegram(f"⚠️ Erreur EasyTaxi Flight Alert : {e}")
+            envoyer_telegram(f"⚠️ Erreur EasyTaxi Flight Alert : {e}", silencieux=True)
 
         time.sleep(10)
 
@@ -2180,7 +2196,7 @@ def main():
         except Exception as e:
             logger.critical(f"Crash total du bot : {e}")
             try:
-                envoyer_telegram(f"🚨 <b>Crash total</b> : {e}\nRedémarrage automatique dans 30s.")
+                envoyer_telegram(f"🚨 <b>Crash total</b> : {e}\nRedémarrage automatique dans 30s.", silencieux=True)
             except Exception:
                 pass
             time.sleep(30)
