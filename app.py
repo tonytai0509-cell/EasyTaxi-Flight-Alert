@@ -1247,6 +1247,13 @@ def envoyer_alertes(vols):
                 nouveaux_retards.append(v)
                 retards_deja_annonces[cle] = v["retard"]
 
+    logger.info(
+        f"envoyer_alertes: {len(vols)} vols analysés -> "
+        f"nouveaux: annules={len(nouveaux_annules)} approches={len(nouvelles_approches)} "
+        f"poses={len(nouveaux_poses)} retards={len(nouveaux_retards)} | "
+        f"tailles mémoire anti-spam: approches_vus={len(approches_deja_annoncees)} poses_vus={len(poses_deja_annonces)}"
+    )
+
     sections = []
 
     if nouveaux_annules:
@@ -2661,6 +2668,7 @@ def envoyer_resume_matin_si_besoin(vols):
 def boucle_principale():
     global dernier_resume, dernier_slot_resume, dernier_envoi_alertes_nuit
     init_db()
+    reancrage_anti_spam_fait = False
     heure_demarrage_str = maintenant().strftime("%d/%m à %H:%M")
     message_demarrage = (
         "🔄 <b>EasyTaxi Flight Alert redémarré</b> — mise à jour déployée\n"
@@ -2705,6 +2713,16 @@ def boucle_principale():
             trains = mettre_a_jour_cache_trains_si_besoin(force=False)
 
             en_periode_grace = maintenant() < fin_grace_demarrage
+
+            # Juste à la sortie de la période de grâce, on re-mémorise silencieusement
+            # les vols/trains déjà posés à partir des données les PLUS FRAÎCHES (pas celles
+            # du tout premier scan au démarrage). Ça évite qu'un léger écart de texte entre
+            # les deux scans (espace, accent...) ne fasse "oublier" un vol déjà vu et
+            # déclenche un rappel en masse de tous les vols déjà posés depuis minuit.
+            if not en_periode_grace and not reancrage_anti_spam_fait:
+                initialiser_sans_spam(vols)
+                initialiser_sans_spam_trains(trains)
+                reancrage_anti_spam_fait = True
 
             # Petites alertes (approche/posé/retard/annulé) : envoi immédiat normalement,
             # mais entre 2h et 7h du matin on les regroupe et espace toutes les 15 min
