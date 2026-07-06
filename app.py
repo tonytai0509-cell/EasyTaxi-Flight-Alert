@@ -387,6 +387,7 @@ def recuperer_vols_site():
     est retenu, et le doublon caché mobile ('show-for-small-only') est ignoré
     puisqu'on cible explicitement le <div class="item"> visible pour la ville."""
     aujourdhui = maintenant().strftime("%Y%m%d")
+    date_demandee = maintenant().date()  # date exacte envoyée à l'API — aucune ambiguïté à lever
     url = f"{URL_ESI_VOLS}?direction=A&terminal=All&date={aujourdhui}"
     headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/14.0"}
     r = requests.get(url, headers=headers, timeout=25)
@@ -428,11 +429,19 @@ def recuperer_vols_site():
 
         heure_status = extraire_heure(status)
         actuel = heure_status or heure
-        dt_prevu = heure_aujourdhui(heure)
+        # La date est fixée par le paramètre envoyé à l'API (date_demandee) — aucune ambiguïté
+        # à deviner ici, contrairement à l'ancienne page qui ne montrait qu'un extrait autour
+        # de l'heure courante. Deviner le jour ici causait un vrai bug : un vol matinal déjà
+        # posé (ex: 00h10) se faisait basculer au lendemain dès qu'on scrapait plus tard le jour même.
+        try:
+            h_prevu, m_prevu = map(int, heure.split(":"))
+            dt_prevu = datetime(date_demandee.year, date_demandee.month, date_demandee.day, h_prevu, m_prevu, tzinfo=PARIS)
+        except (ValueError, AttributeError):
+            dt_prevu = None
         retard = minutes_retard(heure, actuel)
         # dt_actuel dérivé de dt_prevu + retard (déjà corrigé pour le passage de minuit),
         # plutôt que reparsé indépendamment (qui aurait le même bug de jour).
-        dt_actuel = (dt_prevu + timedelta(minutes=retard)) if dt_prevu else heure_aujourdhui(actuel)
+        dt_actuel = (dt_prevu + timedelta(minutes=retard)) if dt_prevu else None
 
         vols.append({
             "numero": numero or "N/A",
