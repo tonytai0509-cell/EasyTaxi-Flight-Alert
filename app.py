@@ -1058,6 +1058,7 @@ def creer_resume(vols, trains=None):
 
     blocs = [
         "✈️ <b>EASYTAXI FLIGHT ALERT</b>\n🕒 " + heure_resume_str,
+        ligne_repos_resume(),
     ]
     if evenement_du_jour_cache:
         blocs.append(evenement_du_jour_cache)
@@ -1265,6 +1266,52 @@ def envoyer_alertes(vols):
 
     if sections:
         envoyer_telegram(encadrer_message("\n\n".join(sections)), silencieux=False)
+
+
+# =========================
+# CYCLE DE REPOS TAXIS (4 couleurs, 2 jours chacune, rotation continue)
+# Ordre du cycle : Jaune -> Bleu -> Blanc -> Rouge -> (retour à Jaune...)
+# Calculé par calcul (pas de grille à retaper), à partir d'un point de repère fixe.
+# =========================
+
+CYCLE_REPOS = [
+    ("Rouge", 1), ("Rouge", 2),
+    ("Jaune", 1), ("Jaune", 2),
+    ("Bleu", 1), ("Bleu", 2),
+    ("Blanc", 1), ("Blanc", 2),
+]
+REPOS_DATE_REFERENCE = datetime(2026, 6, 15).date()  # Rouge, 1er jour de repos (confirmé)
+
+EMOJI_COULEUR_REPOS = {
+    "Jaune": "🟡",
+    "Bleu": "🔵",
+    "Blanc": "⚪",
+    "Rouge": "🔴",
+}
+
+
+def couleur_repos(pour_date=None):
+    """Renvoie (couleur, jour) — jour vaut 1 ou 2 — pour la date donnée (aujourd'hui par défaut)."""
+    d = pour_date or maintenant().date()
+    diff = (d - REPOS_DATE_REFERENCE).days
+    idx = diff % 8
+    return CYCLE_REPOS[idx]
+
+
+def ligne_repos_resume():
+    couleur, _ = couleur_repos()
+    emoji = EMOJI_COULEUR_REPOS.get(couleur, "")
+    return f"🎨 Repos : {couleur} {emoji}"
+
+
+def commande_repos():
+    couleur, jour = couleur_repos()
+    emoji = EMOJI_COULEUR_REPOS.get(couleur, "")
+    if jour == 1:
+        suite = "(1er jour, encore repos demain)"
+    else:
+        suite = "(2ème et dernier jour)"
+    return f"{emoji} {couleur} en repos aujourd'hui {suite}"
 
 
 # =========================
@@ -2348,6 +2395,7 @@ def commande_aide():
         "<code>/t2</code>  Terminal 2 (1h) · <code>/t2+</code> (3h)\n"
         "<code>/vol NUMERO</code>  Chercher un vol précis\n"
         "<code>/sncf</code>  Prochains trains Nice-Ville, TGV/TER (1h)\n"
+        "<code>/repos</code>  Couleur en repos aujourd'hui\n"
         "<code>/etat</code>  Voitures aux terminaux\n"
         "<code>/top</code>  🏆 Top 5 des annonces du jour\n"
         f"{ligne}\n\n"
@@ -2507,6 +2555,8 @@ def traiter_commandes(vols, trains=None):
             repondre_telegram(chat_id, commande_vol(vols, partie[1]))
         elif commande == "/sncf":
             repondre_telegram(chat_id, commande_sncf(trains))
+        elif commande == "/repos":
+            repondre_telegram(chat_id, commande_repos())
         elif commande == "/etat":
             repondre_telegram(chat_id, commande_etat_file())
         elif commande == "/vide":
