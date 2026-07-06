@@ -41,6 +41,7 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
     raise SystemExit("TELEGRAM_TOKEN et TELEGRAM_CHAT_ID doivent être définis en variables d'environnement.")
 
 URL_ESI_VOLS = "https://www.nice.aeroport.fr/en/esi/flights/rows"
+URL_SITE_CLASSIQUE = "https://www.nice.aeroport.fr/en/flights/arrivals"
 
 # Site officiel de l'aéroport = gratuit, seule source utilisée pour les vols
 FREQUENCE_SITE_SECONDES = 60
@@ -265,6 +266,25 @@ def appliquer_ratchet_statuts(vols):
     return vols
 
 
+SEUIL_POSE_FORCE_MINUTES = 20  # au-delà, on considère le vol posé même si le site dit encore "Landing"/"Expected"
+
+
+def corriger_statuts_bloques(vols):
+    """Le site aéroport reste parfois bloqué sur 'Landing'/'Expected' bien après l'atterrissage
+    réel (donnée qui ne se met pas à jour côté source). Si l'heure prévue/estimée est dépassée
+    de plus de SEUIL_POSE_FORCE_MINUTES et que le vol n'est ni annulé ni déjà marqué posé,
+    on force le statut à 'posé' pour ne pas rater indéfiniment l'alerte correspondante."""
+    for v in vols:
+        status = v.get("site_status")
+        dt_actuel = v.get("dt_actuel")
+        if not dt_actuel or est_annule(status) or est_pose(status):
+            continue
+        minutes_ecoulees = (maintenant() - dt_actuel.astimezone(PARIS)).total_seconds() / 60
+        if minutes_ecoulees >= SEUIL_POSE_FORCE_MINUTES:
+            v["site_status"] = f"Arrived {v.get('actuel', '')}".strip()
+    return vols
+
+
 def statut_lisible(v):
     status = v.get("site_status") or v.get("live_status") or v.get("status") or ""
     retard = v.get("retard", 0)
@@ -375,24 +395,10 @@ def premiere_ligne_cellule(cellule):
     return lignes[0] if lignes else ""
 
 
-def recuperer_vols_site():
-    """Récupère TOUS les vols de la journée (00h05 à 23h35) via l'endpoint ESI
-    utilisé par le site lui-même pour charger ses tranches horaires — la page
-    /en/flights/arrivals classique ne renvoie que les 15 premiers résultats.
-
-    Le parsing s'appuie sur les classes HTML stables du site (js-flight-time,
-    js-terminal) plutôt que de deviner sur du texte à plat : chaque <tr> reste
-    associé à son propre terminal, même quand une cellule contient plusieurs
-    compagnies/n° de vol empilés (codeshare) — seul le premier (vol principal)
-    est retenu, et le doublon caché mobile ('show-for-small-only') est ignoré
-    puisqu'on cible explicitement le <div class="item"> visible pour la ville."""
-    aujourdhui = maintenant().strftime("%Y%m%d")
-    date_demandee = maintenant().date()  # date exacte envoyée à l'API — aucune ambiguïté à lever
-    url = f"{URL_ESI_VOLS}?direction=A&terminal=All&date={aujourdhui}"
-    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/14.0"}
-    r = requests.get(url, headers=headers, timeout=25)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
+def _parser_tableau_vols_html(html_texte, date_demandee):
+    """Parsing commun aux deux sources de vols (endpoint complet ESI et page classique) —
+    même structure de tableau HTML des deux côtés (js-flight-time, js-terminal, etc.)."""
+    soup = BeautifulSoup(html_texte, "html.parser")
 
     vols = []
     for cellule_heure in soup.find_all("td", class_="js-flight-time"):
@@ -429,18 +435,12 @@ def recuperer_vols_site():
 
         heure_status = extraire_heure(status)
         actuel = heure_status or heure
-        # La date est fixée par le paramètre envoyé à l'API (date_demandee) — aucune ambiguïté
-        # à deviner ici, contrairement à l'ancienne page qui ne montrait qu'un extrait autour
-        # de l'heure courante. Deviner le jour ici causait un vrai bug : un vol matinal déjà
-        # posé (ex: 00h10) se faisait basculer au lendemain dès qu'on scrapait plus tard le jour même.
         try:
             h_prevu, m_prevu = map(int, heure.split(":"))
             dt_prevu = datetime(date_demandee.year, date_demandee.month, date_demandee.day, h_prevu, m_prevu, tzinfo=PARIS)
         except (ValueError, AttributeError):
             dt_prevu = None
         retard = minutes_retard(heure, actuel)
-        # dt_actuel dérivé de dt_prevu + retard (déjà corrigé pour le passage de minuit),
-        # plutôt que reparsé indépendamment (qui aurait le même bug de jour).
         dt_actuel = (dt_prevu + timedelta(minutes=retard)) if dt_prevu else None
 
         vols.append({
@@ -459,7 +459,46 @@ def recuperer_vols_site():
             "source": "site"
         })
 
+    return vols
+
+
+def recuperer_vols_site():
+    """Récupère TOUS les vols de la journée (00h05 à 23h35) via l'endpoint ESI
+    utilisé par le site lui-même pour charger ses tranches horaires — la page
+    /en/flights/arrivals classique ne renvoie que les 15 premiers résultats.
+
+    La date est fixée par le paramètre envoyé à l'API — aucune ambiguïté à deviner ici,
+    contrairement à l'ancienne page qui ne montrait qu'un extrait autour de l'heure courante."""
+    aujourdhui = maintenant().strftime("%Y%m%d")
+    date_demandee = maintenant().date()
+    url = f"{URL_ESI_VOLS}?direction=A&terminal=All&date={aujourdhui}"
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/15.0"}
+    r = requests.get(url, headers=headers, timeout=25)
+    r.raise_for_status()
+    vols = _parser_tableau_vols_html(r.text, date_demandee)
     return dedoublonner_vols(vols)
+
+
+def recuperer_vols_site_classique():
+    """Page classique (/en/flights/arrivals) : ne montre qu'une quinzaine de vols proches
+    de l'heure actuelle, mais son statut ('Landing'/'Arrived') semble se mettre à jour plus
+    vite que le fragment ESI complet, qui reste parfois bloqué sur un vieux statut. Utilisée
+    uniquement pour rafraîchir le statut des vols déjà connus, pas pour la couverture complète."""
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/15.0"}
+    r = requests.get(URL_SITE_CLASSIQUE, headers=headers, timeout=20)
+    r.raise_for_status()
+    return _parser_tableau_vols_html(r.text, maintenant().date())
+
+
+def fusionner_statuts_recents(vols_principal, vols_classique):
+    """Pour les vols présents dans les deux listes, on fait confiance au statut de la page
+    classique (plus proche du temps réel) plutôt qu'à celui de l'endpoint ESI complet."""
+    statuts_classiques = {cle_vol(v): v.get("site_status") for v in vols_classique}
+    for v in vols_principal:
+        cle = cle_vol(v)
+        if cle in statuts_classiques:
+            v["site_status"] = statuts_classiques[cle]
+    return vols_principal
 
 
 def heure_aujourdhui(hh):
@@ -585,7 +624,15 @@ def mettre_a_jour_cache_si_besoin(force=False):
 
     if force or derniere_maj_site is None or (maintenant() - derniere_maj_site).total_seconds() >= FREQUENCE_SITE_SECONDES:
         try:
-            vols_cache = appliquer_ratchet_statuts(recuperer_vols_site())
+            vols_bruts = recuperer_vols_site()
+            try:
+                vols_classique = recuperer_vols_site_classique()
+                vols_bruts = fusionner_statuts_recents(vols_bruts, vols_classique)
+            except Exception as e:
+                # La page classique est un bonus (statut plus frais) : si elle échoue,
+                # on continue quand même avec les données de l'endpoint complet seul.
+                logger.warning(f"Erreur page classique (statuts non rafraîchis) : {e}")
+            vols_cache = corriger_statuts_bloques(appliquer_ratchet_statuts(vols_bruts))
             derniere_maj_site = maintenant()
             _verifier_watchdog_site(vols_cache)
             nb_t1 = sum(1 for v in vols_cache if v.get("terminal") == "1")
