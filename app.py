@@ -2046,9 +2046,9 @@ def clavier_nombres(loc):
     if loc == "t1_babel":
         lignes.append([{"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
         lignes.append([{"text": "⬇️ Descente", "callback_data": f"descente:{loc}"}])
-        lignes.append([{"text": "🔶 La quille descend", "callback_data": "quilledescend"}])
+        lignes.append([{"text": "🟧 La quille descend", "callback_data": "quilledescend"}])
     if loc == "t1_lineaire":
-        lignes.append([{"text": "🔶 La quille monte", "callback_data": "quillemonte"}])
+        lignes.append([{"text": "🟧 La quille monte", "callback_data": "quillemonte"}])
     if loc == "t2_parking":
         lignes.append([{"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
     lignes.append([{"text": "✏️ Autre nombre", "callback_data": f"custom:{loc}"}])
@@ -2075,8 +2075,8 @@ def definir_quille_t1(position, qui):
 
 def texte_quille(position, qui):
     if position == "lineaire":
-        return f"🔶 <b>{qui} vient de prendre la quille à Babel et la descend au linéaire.</b>"
-    return f"🔶 <b>{qui} vient de prendre la quille au linéaire et la remonte à Babel.</b>"
+        return f"🟧 <b>{qui} vient de prendre la quille à Babel et la descend au linéaire.</b>"
+    return f"🟧 <b>{qui} vient de prendre la quille au linéaire et la remonte à Babel.</b>"
 
 
 def label_position_quille(position):
@@ -2430,6 +2430,11 @@ def traiter_callback(callback):
         position = "lineaire" if data == "quilledescend" else "babel"
         qui = (callback.get("from") or {}).get("first_name", "quelqu'un")
         definir_quille_t1(position, qui)
+        if data == "quilledescend":
+            definir_position("t1", 0, "reserve", qui)  # Babel se vide forcément quand la quille descend
+        else:
+            definir_position("t1", "FULL", "lineaire", qui)  # le linéaire est forcément plein quand la quille remonte
+            definir_position("t1", 1, "reserve", qui)  # la personne qui remonte la quille est maintenant à Babel
         repondre_callback(callback_id, "Enregistré ✅")
         repondre_telegram(chat_id, texte_quille(position, qui), silencieux=False)
         return
@@ -2771,7 +2776,7 @@ def commande_etat_file():
             "à l'instant" if mins_quille == 0 else f"il y a {mins_quille} min"
         )
         lignes.append(
-            f"\n🔶 Quille T1 : <b>{label_position_quille(quille.get('position'))}</b> "
+            f"\n🟧 Quille T1 : <b>{label_position_quille(quille.get('position'))}</b> "
             f"({age_quille}, {quille.get('qui') or '?'})"
         )
     return "\n".join(lignes)
