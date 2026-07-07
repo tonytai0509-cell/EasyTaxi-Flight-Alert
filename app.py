@@ -120,6 +120,7 @@ DB_FICHIER = os.getenv("DB_FICHIER", "historique_vols.db")
 
 # ---- Persistance des mémoires anti-doublon (évite les alertes répétées après un redémarrage) ----
 ETATS_FICHIER = os.getenv("ETATS_FICHIER", "etats_alertes.json")
+ABONNEMENTS_VOL_FICHIER = os.getenv("ABONNEMENTS_VOL_FICHIER", "abonnements_vol.json")
 
 # ---- Compteur de voitures par terminal (signalé par les chauffeurs) ----
 FILE_FICHIER = os.getenv("FILE_FICHIER", "file_attente.json")
@@ -1411,6 +1412,61 @@ def regrouper_par_terminal(liste_vols, formatter):
     return "\n".join(blocs)
 
 
+def charger_abonnements_vol():
+    try:
+        with open(ABONNEMENTS_VOL_FICHIER, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def sauver_abonnements_vol(data):
+    try:
+        with open(ABONNEMENTS_VOL_FICHIER, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.warning(f"Erreur sauvegarde abonnements vol: {e}")
+
+
+def commande_suivi(numero, user_id, nom):
+    numero = (numero or "").upper().replace(" ", "")
+    if not numero:
+        return "Précise un numéro de vol, ex : <code>/suivi EJU1618</code>"
+    data = charger_abonnements_vol()
+    abonnes = data.setdefault(numero, [])
+    if not any(a["user_id"] == user_id for a in abonnes):
+        abonnes.append({"user_id": user_id, "nom": nom})
+    sauver_abonnements_vol(data)
+    return (
+        f"🔔 Suivi activé pour le vol <b>{numero}</b>.\n"
+        f"Je te tague dans le groupe dès qu'il passe en approche, puis quand il atterrit."
+    )
+
+
+def notifier_abonnes_vol(vols_evenement, evenement_label, emoji):
+    """Envoie un message qui tague (mention cliquable) chaque personne abonnée à un vol
+    qui vient de passer en approche ou de se poser. L'abonnement est retiré après l'atterrissage."""
+    abonnements = charger_abonnements_vol()
+    if not abonnements:
+        return
+    modifie = False
+    for v in vols_evenement:
+        numero = (v.get("numero") or "").upper().replace(" ", "")
+        abonnes = abonnements.get(numero)
+        if not abonnes:
+            continue
+        tags = " ".join(f'<a href="tg://user?id={a["user_id"]}">{html.escape(a["nom"])}</a>' for a in abonnes)
+        envoyer_telegram(
+            f"{emoji} {tags} ton vol <b>{numero}</b> {evenement_label} !",
+            silencieux=False
+        )
+        if evenement_label == "vient de se poser":
+            del abonnements[numero]
+            modifie = True
+    if modifie:
+        sauver_abonnements_vol(abonnements)
+
+
 def envoyer_alertes(vols):
     nouveaux_annules, nouvelles_approches, nouveaux_poses, nouveaux_retards = [], [], [], []
 
@@ -1472,6 +1528,11 @@ def envoyer_alertes(vols):
 
     if sections:
         envoyer_telegram(encadrer_message("\n\n".join(sections)), silencieux=False)
+
+    if nouvelles_approches:
+        notifier_abonnes_vol(nouvelles_approches, "est en approche", "🔔")
+    if nouveaux_poses:
+        notifier_abonnes_vol(nouveaux_poses, "vient de se poser", "🔔")
 
 
 # =========================
@@ -2873,6 +2934,7 @@ def commande_aide():
         "<code>/t1</code>  Terminal 1 (1h) · <code>/t1+</code> (3h)\n"
         "<code>/t2</code>  Terminal 2 (1h) · <code>/t2+</code> (3h)\n"
         "<code>/vol NUMERO</code>  Chercher un vol précis\n"
+        "<code>/suivi NUMERO</code>  Être tagué à l'approche et à l'atterrissage d'un vol\n"
         "<code>/sncf</code>  Prochains trains Nice-Ville, TGV/TER (1h)\n"
         "<code>/circulation</code>  État trafic Monaco → Cannes (A8)\n"
         "<code>/repos</code>  Couleur en repos aujourd'hui\n"
@@ -3044,6 +3106,10 @@ def traiter_commandes(vols, trains=None):
             repondre_telegram(chat_id, commande_terminal(vols, "2", minutes=180))
         elif commande in ("/vol", "/flight") and len(partie) > 1:
             repondre_telegram(chat_id, commande_vol(vols, partie[1]))
+        elif commande == "/suivi" and len(partie) > 1:
+            user_id = (message.get("from") or {}).get("id")
+            nom = (message.get("from") or {}).get("first_name", "quelqu'un")
+            repondre_telegram(chat_id, commande_suivi(partie[1], user_id, nom))
         elif commande == "/sncf":
             repondre_telegram(chat_id, commande_sncf(trains))
         elif commande == "/circulation":
