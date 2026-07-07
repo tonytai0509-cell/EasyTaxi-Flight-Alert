@@ -493,6 +493,20 @@ def recuperer_vols_site():
     vols = _parser_tableau_vols_html(r.text, aujourdhui)
 
     if maintenant().hour >= 20:
+        # Le site liste parfois déjà les tout premiers vols du lendemain (00h-06h) dans le
+        # tableau "aujourd'hui" lui-même (vu sur l'écran d'affichage de l'aéroport). Comme on
+        # leur a donné la date d'aujourd'hui, ils paraissent "déjà passés" une fois qu'il est
+        # tard le soir et disparaissent à tort des résumés/commandes. On corrige : le soir,
+        # une heure < 6h dans le lot "aujourd'hui" appartient en réalité à demain.
+        for v in vols:
+            statut = v.get("site_status") or v.get("live_status") or v.get("status")
+            if est_arrive_ou_approche(statut):
+                continue  # jamais toucher un vol déjà posé/en approche : sécurité anti-régression
+            for champ in ("dt_prevu", "dt_actuel"):
+                dt = v.get(champ)
+                if dt and dt.hour < 6:
+                    v[champ] = dt + timedelta(days=1)
+
         demain = aujourdhui + timedelta(days=1)
         try:
             url_demain = f"{URL_ESI_VOLS}?direction=A&terminal=All&date={demain.strftime('%Y%m%d')}"
@@ -1888,7 +1902,7 @@ def mettre_a_jour_matchs_concerts_si_besoin(force=False):
         if concert:
             lignes.append(f"<i>{concert} (Palais Nikaïa)</i>")
 
-        matchs_concerts_cache = "Matchs & concerts\n" + "\n".join(lignes) if lignes else None
+        matchs_concerts_cache = "Matchs & Concerts\n" + "\n".join(lignes) if lignes else None
         logger.info(f"Matchs & concerts du jour retenu(s): {matchs_concerts_cache!r}")
     except Exception as e:
         logger.warning(f"Erreur mise à jour matchs & concerts: {e}")
