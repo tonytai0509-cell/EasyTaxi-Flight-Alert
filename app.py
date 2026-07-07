@@ -533,13 +533,25 @@ def recuperer_vols_site_classique():
 
 
 def fusionner_statuts_recents(vols_principal, vols_classique):
-    """Pour les vols présents dans les deux listes, on fait confiance au statut de la page
-    classique (plus proche du temps réel) plutôt qu'à celui de l'endpoint ESI complet."""
-    statuts_classiques = {cle_vol(v): v.get("site_status") for v in vols_classique}
+    """Pour les vols présents dans les deux listes, on fait confiance à la page classique
+    (plus proche du temps réel) pour le statut ET pour l'heure estimée, quand elle est plus
+    précise que l'endpoint ESI (qui reste parfois bloqué sur 'Delayed' sans heure alors que
+    la page classique a déjà 'Delayed HH:MM'). On ne reprend jamais sa date : seulement
+    l'heure HH:MM, recombinée avec la date déjà résolue côté principal — pour ne pas
+    réintroduire le bug de date autour de minuit qu'on a corrigé par ailleurs."""
+    classiques = {cle_vol(v): v for v in vols_classique}
     for v in vols_principal:
-        cle = cle_vol(v)
-        if cle in statuts_classiques:
-            v["site_status"] = statuts_classiques[cle]
+        c = classiques.get(cle_vol(v))
+        if not c:
+            continue
+        v["site_status"] = c.get("site_status")
+        actuel_classique = c.get("actuel")
+        # On ne reprend l'heure classique que si elle apporte une info que le principal
+        # n'a pas déjà (principal encore sur l'heure prévue = pas de retard détecté).
+        if actuel_classique and actuel_classique != c.get("prevu") and v.get("actuel") == v.get("prevu") and v.get("dt_prevu"):
+            v["actuel"] = actuel_classique
+            v["retard"] = minutes_retard(v["prevu"], actuel_classique)
+            v["dt_actuel"] = v["dt_prevu"] + timedelta(minutes=v["retard"])
     return vols_principal
 
 
