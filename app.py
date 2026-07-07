@@ -1258,6 +1258,8 @@ def creer_resume(vols, trains=None):
     ]
     if evenement_du_jour_cache:
         blocs.append(evenement_du_jour_cache)
+    if matchs_concerts_cache:
+        blocs.append(matchs_concerts_cache)
     blocs += [
         bloc_etat_voitures(),
         bloc_terminal("🔵 T1 · 1h", t1_heure).strip(),
@@ -1519,7 +1521,7 @@ MOIS_FR = {
     "juillet": 7, "aout": 8, "août": 8, "septembre": 9, "octobre": 10, "novembre": 11,
     "decembre": 12, "décembre": 12,
     "sept": 9, "oct": 10, "nov": 11, "dec": 12, "déc": 12, "janv": 1, "fev": 2, "fév": 2,
-    "juil": 7,
+    "fevr": 2, "févr": 2, "avr": 4, "juil": 7,
 }
 
 evenement_du_jour_cache = None  # texte prêt à insérer dans le résumé, ou None si rien aujourd'hui
@@ -1745,6 +1747,156 @@ def mettre_a_jour_evenements_si_besoin(force=False):
 
 
 # =========================
+# MATCHS & CONCERTS (Allianz Riviera, Palais Nikaïa) — même logique que les
+# événements Cannes/Monaco/Nice ci-dessus : un scan par jour, mis en cache.
+# =========================
+
+URL_NIKAIA_PROGRAMMATION = "https://www.nikaia.fr/programmation"
+
+matchs_concerts_cache = None
+dernier_scan_matchs_concerts = None
+
+# Mots qui excluent un événement Nikaïa de "Matchs & concerts" (salons professionnels,
+# foires, expositions... pas des concerts/spectacles).
+MOTS_EXCLUS_NIKAIA = ("salon", "foire", "exposition", "congrès", "congres", "brocante")
+
+_LIGNES_A_IGNORER_CALENDRIER = ("nice", "allianz riviera", "tout sur le match", "compte-rendu")
+
+
+def saison_ogcnice_actuelle():
+    """Devine la saison OGC Nice en cours (ex: '2026-2027') à partir du mois. La saison de
+    Ligue 1 se termine fin mai et la suivante commence mi-juillet ; à partir de juillet on
+    bascule donc déjà sur la saison à venir — comme le fait le menu du site du club lui-même.
+    Détection automatique pour ne jamais avoir à mettre à jour cette URL à la main."""
+    n = maintenant()
+    if n.month >= 7:
+        return f"{n.year}-{n.year + 1}"
+    return f"{n.year - 1}-{n.year}"
+
+
+def recuperer_match_allianz_riviera_du_jour():
+    """Cherche dans le calendrier officiel OGC Nice s'il y a un match à domicile
+    (Allianz Riviera) aujourd'hui, et renvoie le nom de l'adversaire, ou None sinon."""
+    saison = saison_ogcnice_actuelle()
+    url = f"https://www.ogcnice.com/fr/calendrier/f/{saison}/equipe-pro"
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/15.0"}
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+    except Exception as e:
+        logger.warning(f"Erreur calendrier OGC Nice ({saison}): {e}")
+        return None
+
+    try:
+        soup = BeautifulSoup(r.text, "html.parser")
+        lignes = [nettoyer(l) for l in soup.get_text("\n").split("\n") if nettoyer(l)]
+        aujourdhui = maintenant().date()
+        jours_semaine = r"lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche"
+        regex_date = re.compile(rf"^(?:{jours_semaine})\s+(\d{{1,2}})\s+([A-Za-zéûôîâ]+)$", re.IGNORECASE)
+
+        for i, ligne in enumerate(lignes):
+            m = regex_date.match(ligne)
+            if not m:
+                continue
+            date_match = construire_date_evenement(m.group(1), m.group(2))
+            if date_match != aujourdhui:
+                continue
+            fenetre = lignes[i + 1:i + 15]
+            if not any("allianz riviera" in l.lower() for l in fenetre):
+                continue  # match du jour, mais à l'extérieur : pas notre affaire
+            for l in fenetre:
+                bl = l.lower()
+                if bl in _LIGNES_A_IGNORER_CALENDRIER:
+                    continue
+                if re.fullmatch(r"\d{1,2}", l):
+                    continue  # jour du mois redondant
+                if re.fullmatch(r"\d+(\s*\(\d+\))?", l):
+                    continue  # score
+                if _normaliser_mois(l):
+                    continue  # mois abrégé redondant
+                return l  # premier nom d'équipe restant = l'adversaire
+            return "adversaire à confirmer"
+        return None
+    except Exception as e:
+        logger.warning(f"Erreur analyse calendrier OGC Nice: {e}")
+        return None
+
+
+def recuperer_concert_nikaia_du_jour():
+    """Cherche sur la page officielle du Palais Nikaïa s'il y a un concert/spectacle
+    aujourd'hui, et renvoie son titre, ou None sinon. Exclut salons/foires/expositions,
+    qui ne sont pas des concerts/spectacles."""
+    headers = {"User-Agent": "Mozilla/5.0 EasyTaxiFlightAlert/15.0"}
+    try:
+        r = requests.get(URL_NIKAIA_PROGRAMMATION, headers=headers, timeout=20)
+        r.raise_for_status()
+    except Exception as e:
+        logger.warning(f"Erreur programmation Nikaïa: {e}")
+        return None
+
+    try:
+        soup = BeautifulSoup(r.text, "html.parser")
+        lignes = [nettoyer(l) for l in soup.get_text("\n").split("\n") if nettoyer(l)]
+        aujourdhui = maintenant().date()
+
+        regex_simple = re.compile(
+            r"^Le\s+\w+\s+(\d{1,2})(?:er)?\s+([A-Za-zéûôîâ]+)\.?\s+(\d{4})$", re.IGNORECASE
+        )
+        regex_plage = re.compile(
+            r"^Du\s+(\d{1,2})(?:er)?\s+([A-Za-zéûôîâ]+)\.?\s+au\s+(\d{1,2})(?:er)?\s+([A-Za-zéûôîâ]+)\.?\s+(\d{4})$",
+            re.IGNORECASE
+        )
+
+        for i, ligne in enumerate(lignes):
+            m_simple = regex_simple.match(ligne)
+            m_plage = regex_plage.match(ligne) if not m_simple else None
+            if m_simple:
+                d = construire_date_evenement(m_simple.group(1), m_simple.group(2), m_simple.group(3))
+                dans_periode = (d == aujourdhui)
+            elif m_plage:
+                d1 = construire_date_evenement(m_plage.group(1), m_plage.group(2), m_plage.group(5))
+                d2 = construire_date_evenement(m_plage.group(3), m_plage.group(4), m_plage.group(5))
+                dans_periode = bool(d1 and d2 and d1 <= aujourdhui <= d2)
+            else:
+                continue
+            if not dans_periode or i == 0:
+                continue
+            titre = lignes[i - 1]
+            if any(mot in titre.lower() for mot in MOTS_EXCLUS_NIKAIA):
+                continue
+            return titre
+        return None
+    except Exception as e:
+        logger.warning(f"Erreur analyse programmation Nikaïa: {e}")
+        return None
+
+
+def mettre_a_jour_matchs_concerts_si_besoin(force=False):
+    """Scanne une fois par jour le calendrier OGC Nice (Allianz Riviera) et la
+    programmation du Palais Nikaïa, et met en cache le résultat pour les résumés du jour."""
+    global matchs_concerts_cache, dernier_scan_matchs_concerts
+    aujourdhui = maintenant().date()
+    if not force and dernier_scan_matchs_concerts == aujourdhui:
+        return
+
+    try:
+        lignes = []
+        adversaire = recuperer_match_allianz_riviera_du_jour()
+        if adversaire:
+            lignes.append(f"<i>OGC Nice - {adversaire} (Allianz Riviera)</i>")
+        concert = recuperer_concert_nikaia_du_jour()
+        if concert:
+            lignes.append(f"<i>{concert} (Palais Nikaïa)</i>")
+
+        matchs_concerts_cache = "Matchs & concerts\n" + "\n".join(lignes) if lignes else None
+        logger.info(f"Matchs & concerts du jour retenu(s): {matchs_concerts_cache!r}")
+    except Exception as e:
+        logger.warning(f"Erreur mise à jour matchs & concerts: {e}")
+
+    dernier_scan_matchs_concerts = aujourdhui
+
+
+# =========================
 # COMMANDES TELEGRAM (getUpdates = API Telegram, gratuite et illimitée)
 # Ces commandes ne lisent QUE vols_cache : elles ne déclenchent JAMAIS
 # d'appel RapidAPI, donc aucun impact sur le quota mensuel.
@@ -1831,7 +1983,8 @@ menus_en_attente = {}  # message_id -> {"chat_id": ..., "envoye": datetime}
 
 # ---- Alerte "volée" (beaucoup de monde, plus assez de taxis) ----
 DUREE_VOLEE_MINUTES = int(os.getenv("DUREE_VOLEE_MINUTES", "25"))
-volee_active = {}  # "v1"/"v2" -> {"debut": datetime, "message_id": int}
+volee_active = {}  # "v1"/"v2"/"vgare" -> {"debut": datetime, "message_id": int}
+LABEL_VOLEE = {"v1": "TERMINAL 1", "v2": "TERMINAL 2", "vgare": "LA GARE"}
 
 
 def clavier_emplacements():
@@ -1843,6 +1996,7 @@ def clavier_emplacements():
         [{"text": "🚉 Gare", "callback_data": "loc:gare"}],
         [{"text": "🚨 VOLÉE T1", "callback_data": "volee:v1"},
          {"text": "🚨 VOLÉE T2", "callback_data": "volee:v2"}],
+        [{"text": "🚨 VOLÉE GARE", "callback_data": "volee:vgare"}],
     ]}
 
 
@@ -1892,6 +2046,11 @@ def clavier_nombres(loc):
     if loc == "t1_babel":
         lignes.append([{"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
         lignes.append([{"text": "⬇️ Descente", "callback_data": f"descente:{loc}"}])
+        lignes.append([{"text": "🔶 La quille descend", "callback_data": "quilledescend"}])
+    if loc == "t1_lineaire":
+        lignes.append([{"text": "🔶 La quille monte", "callback_data": "quillemonte"}])
+    if loc == "t2_parking":
+        lignes.append([{"text": "FULL", "callback_data": f"cnt:{loc}:FULL"}])
     lignes.append([{"text": "✏️ Autre nombre", "callback_data": f"custom:{loc}"}])
     lignes.append([{"text": "⬅️ Retour", "callback_data": "loc:retour"}])
     return {"inline_keyboard": lignes}
@@ -1904,6 +2063,24 @@ def texte_descente_babel(qui, nombre_restant):
             f"Il reste <b>{nombre_restant}</b> taxi(s) à Babel."
         )
     return f"⬇️ <b>{qui} descend de Babel</b>\nBabel est vide !"
+
+
+def definir_quille_t1(position, qui):
+    """position: 'babel' (à Babel) ou 'lineaire' (au linéaire). La quille matérialise
+    l'ordre de passage entre les deux emplacements de T1."""
+    data = charger_file_attente()
+    data["quille_t1"] = {"position": position, "maj": maintenant().isoformat(), "qui": qui}
+    sauver_file_attente(data)
+
+
+def texte_quille(position, qui):
+    if position == "lineaire":
+        return f"🔶 <b>{qui} vient de prendre la quille à Babel et la descend au linéaire.</b>"
+    return f"🔶 <b>{qui} vient de prendre la quille au linéaire et la remonte à Babel.</b>"
+
+
+def label_position_quille(position):
+    return "🅿️ Babel" if position == "babel" else "🚕 Linéaire"
 
 
 def clavier_descente(loc):
@@ -2004,11 +2181,13 @@ def envoyer_demande_nombre(chat_id, label, question=None):
 
 
 def texte_alerte_volee(terminal_code, qui=None, nb_pax=None):
-    label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
-    corps = (
-        "🚨🚨🚨 <b>ALERTE VOLÉE</b> 🚨🚨🚨\n\n"
-        f"<b>BEAUCOUP DE MONDE À {label}</b>\n"
-    )
+    label = LABEL_VOLEE.get(terminal_code, terminal_code.upper())
+    beaucoup_de_monde = nb_pax is None or nb_pax >= 20
+    corps = "🚨🚨🚨 <b>ALERTE VOLÉE</b> 🚨🚨🚨\n\n"
+    if beaucoup_de_monde:
+        corps += f"<b>BEAUCOUP DE MONDE À {label}</b>\n"
+    else:
+        corps += f"<b>VOLÉE À {label}</b>\n"
     if nb_pax is not None:
         corps += f"👥 Environ <b>{nb_pax}</b> passagers en attente\n"
     corps += (
@@ -2178,7 +2357,7 @@ def traiter_callback(callback):
     if data.startswith("volee:"):
         terminal_code = data.split(":", 1)[1]
         repondre_callback(callback_id)
-        label = "TERMINAL 1" if terminal_code == "v1" else "TERMINAL 2"
+        label = LABEL_VOLEE.get(terminal_code, terminal_code.upper())
         editer_message_telegram(
             chat_id, message_id,
             f"⚠️ Confirmer l'alerte VOLÉE {label} ? Tout le monde va être prévenu.",
@@ -2220,6 +2399,8 @@ def traiter_callback(callback):
                     precision = "Babel plein"
                 elif loc == "t2_lineaire":
                     precision = "Fin linéaire T2"
+                elif loc == "t2_parking":
+                    precision = "Parking T2 plein"
                 else:
                     precision = "complet"
                 texte_confirmation = f"✅ {label_position(terminal, mode)} : <b>FULL</b> ({precision})"
@@ -2243,6 +2424,14 @@ def traiter_callback(callback):
         supprimer_message_telegram(chat_id, message_id)
         prompt_id = envoyer_demande_nombre(chat_id, label)
         attente_nombre_personnalise[(chat_id, user_id)] = (terminal, mode, prompt_id, "normal")
+        return
+
+    if data in ("quilledescend", "quillemonte"):
+        position = "lineaire" if data == "quilledescend" else "babel"
+        qui = (callback.get("from") or {}).get("first_name", "quelqu'un")
+        definir_quille_t1(position, qui)
+        repondre_callback(callback_id, "Enregistré ✅")
+        repondre_telegram(chat_id, texte_quille(position, qui), silencieux=False)
         return
 
     if data.startswith("descente:"):
@@ -2391,22 +2580,25 @@ def minutes_depuis(iso_str):
 
 def parser_position(texte):
     """Extrait (terminal, nombre, mode) d'un message libre du type
-    '8pk t2', '30 parking t2', 'T1 15', '3 linéaire t1'.
+    '8pk t2', '30 parking t2', '10t1', '10 t1', '3 t2', '4 t2', '3 linéaire t1'.
     - mode 'parking'/'reserve' = débordement (linéaire plein, nombre = total du terminal)
-    - mode 'lineaire' = pas encore plein
-    - mode None = compte global sans précision
+    - mode 'lineaire' = pas encore plein — c'est aussi le mode par défaut d'un simple
+      'nombre + terminal' sans autre précision (ex: '10t1', '10 t1', '3 t2', '4 t2'),
+      collé ou avec espace, car c'est ce que les chauffeurs veulent dire en pratique.
     Retourne None si pas de nombre, 'ambigu' si 'linéaire' cité sans terminal précisé."""
     t = texte.lower().strip()
 
     # Extraire le terminal en premier et le retirer du texte, pour ne pas confondre
-    # le "1" de "T1" avec le nombre de voitures.
+    # le "1" de "T1" avec le nombre de voitures. (?<![a-z]) au lieu de \b devant le "t"
+    # pour aussi reconnaître les formes collées comme "10t1" (chiffre directement suivi
+    # de "t1", sans frontière de mot classique entre un chiffre et une lettre).
     terminal = None
-    m = re.search(r"\bt ?1\b", t)
+    m = re.search(r"(?<![a-z])t ?1\b", t)
     if m:
         terminal = "t1"
         t_sans_terminal = t[:m.start()] + " " + t[m.end():]
     else:
-        m = re.search(r"\bt ?2\b", t)
+        m = re.search(r"(?<![a-z])t ?2\b", t)
         if m:
             terminal = "t2"
             t_sans_terminal = t[:m.start()] + " " + t[m.end():]
@@ -2427,7 +2619,7 @@ def parser_position(texte):
             return "ambigu"
         return (terminal, nombre, "lineaire")
     if terminal is not None:
-        return (terminal, nombre, None)
+        return (terminal, nombre, "lineaire")
     return None
 
 
@@ -2479,6 +2671,22 @@ def detecter_special_t2(texte):
 
     if t2_mentionne and (re.search(r"fin\s*lineaire|lineaire\s*full|full\s*lineaire", t_sans_terminal) or t_sans_terminal == "full"):
         return ("t2", "FULL", "lineaire")
+    return None
+
+
+def detecter_full_parking_t2(texte):
+    """Détecte le parking T2 complet : 'parking full', 'pk t2 plein', 't2 pk plein',
+    'parking t2 plein', 't2 parking plein', 't2 parking full', 'full parking', 'plein pk', etc.
+    Exige le mot 'parking'/'pk' EN PLUS de 'full'/'plein' — pour ne jamais entrer en collision
+    avec 't2 full' tout seul, qui reste réservé au linéaire T2 (déjà utilisé par les chauffeurs).
+    Toujours T2, seul terminal avec un mode parking."""
+    t = texte.lower().strip()
+    t = unicodedata.normalize("NFKD", t)
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    a_parking = bool(re.search(r"\bparking\b|\bpk\b", t))
+    a_plein = bool(re.search(r"\bfull\b|\bpleine?\b", t))
+    if a_parking and a_plein:
+        return ("t2", "FULL", "parking")
     return None
 
 
@@ -2555,6 +2763,17 @@ def commande_etat_file():
             lignes.append(f"{label_position(terminal, mode)} : ⚡ <b>Rythme soutenu</b> ({age})")
         else:
             lignes.append(f"{label_position(terminal, mode)} : <b>{nb}</b> ({age})")
+
+    quille = data.get("quille_t1")
+    if quille:
+        mins_quille = minutes_depuis(quille.get("maj"))
+        age_quille = "jamais signalé" if mins_quille is None else (
+            "à l'instant" if mins_quille == 0 else f"il y a {mins_quille} min"
+        )
+        lignes.append(
+            f"\n🔶 Quille T1 : <b>{label_position_quille(quille.get('position'))}</b> "
+            f"({age_quille}, {quille.get('qui') or '?'})"
+        )
     return "\n".join(lignes)
 
 
@@ -2767,7 +2986,7 @@ def traiter_commandes(vols, trains=None):
                     continue
 
                 # Message libre : on tente de le lire comme un signalement de voitures
-                resultat = detecter_special_t2(texte) or detecter_gare(texte) or detecter_format_court_lineaire(texte) or detecter_bb_babel(texte) or parser_position(texte)
+                resultat = detecter_special_t2(texte) or detecter_full_parking_t2(texte) or detecter_gare(texte) or detecter_format_court_lineaire(texte) or detecter_bb_babel(texte) or parser_position(texte)
                 if resultat == "ambigu":
                     repondre_telegram(chat_id, "Précise le terminal : par exemple '3 linéaire t1' ou '3 linéaire t2'.")
                 elif resultat:
@@ -2781,6 +3000,11 @@ def traiter_commandes(vols, trains=None):
                         valeur_txt = "<b>A4</b> (½ parking)"
                     elif nombre == "3/4":
                         valeur_txt = "<b>3/4</b> (linéaire presque plein)"
+                    elif nombre == "FULL":
+                        if mode == "parking":
+                            valeur_txt = "<b>FULL</b> (parking T2 plein)"
+                        else:
+                            valeur_txt = "<b>FULL</b> (fin linéaire T2)"
                     else:
                         valeur_txt = f"<b>{nombre}</b> voitures"
                     repondre_telegram(chat_id, f"🟧 ✅ {label_position(terminal, mode)} : {valeur_txt}\n<i>Signalé par {qui}</i>", silencieux=False)
@@ -2931,6 +3155,7 @@ def boucle_principale():
         initialiser_sans_spam_trains(trains)
 
         mettre_a_jour_evenements_si_besoin(force=True)
+        mettre_a_jour_matchs_concerts_si_besoin(force=True)
 
         mettre_a_jour_cache_circulation_si_besoin(force=True)
 
@@ -2946,6 +3171,7 @@ def boucle_principale():
             nettoyer_caches_si_besoin()
             verifier_expiration_volees()
             mettre_a_jour_evenements_si_besoin()
+            mettre_a_jour_matchs_concerts_si_besoin()
 
             vols = mettre_a_jour_cache_si_besoin(force=False)
             trains = mettre_a_jour_cache_trains_si_besoin(force=False)
