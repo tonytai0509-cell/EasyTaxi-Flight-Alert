@@ -412,6 +412,9 @@ input:focus{border-color:var(--btn)}
 input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .ligne{display:flex;gap:10px}
 .ligne input{flex:1;min-width:0}
+.hm{flex:1;display:flex;align-items:center;gap:8px;min-width:0}
+.hm span{font-size:26px;font-weight:600;color:var(--hint)}
+.hm input{text-align:center;font-size:24px;font-weight:600;padding-left:0;padding-right:0}
 .micro{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:38px;height:38px;border:0;border-radius:19px;background:transparent;font-size:20px;padding:0}
 .micro.ecoute{background:rgba(229,72,77,.3)}
 .jour{display:flex;gap:8px;margin-top:8px}
@@ -432,9 +435,9 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 <h1>Donner une course</h1>
 <div class="trait"></div>
 
-<label for="heure">Heure</label>
+<label for="hh">Heure</label>
 <div class="ligne">
-  <input id="heure" placeholder="Ex : 14h30" autocomplete="off" maxlength="40">
+  <div class="hm"><input id="hh" inputmode="numeric" pattern="[0-9]*" placeholder="--" autocomplete="off" maxlength="2"><span>:</span><input id="mm" inputmode="numeric" pattern="[0-9]*" placeholder="--" autocomplete="off" maxlength="2"></div>
   <button type="button" class="maintenant" id="maintenant">Maintenant</button>
 </div>
 <div class="jour"><button type="button" id="auj" class="actif">Aujourd'hui</button><button type="button" id="dem">Demain</button></div>
@@ -462,12 +465,34 @@ var maintenant=false;
 function majMaintenant(actif){
   maintenant=actif;
   $("maintenant").classList.toggle("actif",actif);
-  if(actif){$("heure").value="";$("heure").placeholder="Maintenant";}
-  else{$("heure").placeholder="Ex : 14h30";}
+  if(actif){$("hh").value="";$("mm").value="";}
 }
 $("maintenant").addEventListener("click",function(){tap();majMaintenant(!maintenant);});
-$("heure").addEventListener("input",function(){if(maintenant&&$("heure").value){majMaintenant(false);}});
-$("heure").addEventListener("focus",function(){if(maintenant){majMaintenant(false);}});
+/* Heure en deux cases HH : MM, clavier numérique, saut automatique vers les minutes */
+function deux(v){v=String(v||"");return v.length<2?("0"+v).slice(-2):v;}
+function getHeure(){
+  var h=$("hh").value.replace(/[^0-9]/g,""),m=$("mm").value.replace(/[^0-9]/g,"");
+  if(!h)return "";
+  return deux(h)+"h"+deux(m||"00");
+}
+$("hh").addEventListener("input",function(){
+  var v=this.value.replace(/[^0-9]/g,"").slice(0,2);
+  if(v.length===1&&+v>2){v="0"+v;}            /* 9 -> 09 */
+  if(v.length===2&&+v>23){v="23";}
+  this.value=v;
+  if(v&&maintenant){majMaintenant(false);this.value=v;}
+  if(v.length===2){$("mm").focus();}
+});
+$("mm").addEventListener("input",function(){
+  var v=this.value.replace(/[^0-9]/g,"").slice(0,2);
+  if(v.length===1&&+v>5){v="0"+v;}            /* 7 -> 07 */
+  if(v.length===2&&+v>59){v="59";}
+  this.value=v;
+  if(maintenant&&v){majMaintenant(false);this.value=v;}
+});
+$("hh").addEventListener("blur",function(){if(this.value.length===1){this.value=deux(this.value);}});
+$("mm").addEventListener("blur",function(){if(this.value.length===1){this.value=deux(this.value);}});
+["hh","mm"].forEach(function(id){$(id).addEventListener("focus",function(){if(maintenant){majMaintenant(false);}});});
 majMaintenant(true); /* « Maintenant » coché d'office : on gagne un geste en roulant */
 
 /* Aujourd'hui / Demain : pour demain, l'heure est obligatoire (pas de « Maintenant ») */
@@ -477,7 +502,7 @@ function majJour(d){
   $("auj").classList.toggle("actif",!d);
   $("dem").classList.toggle("actif",d);
   $("maintenant").style.display=d?"none":"";
-  if(d){majMaintenant(false);$("heure").placeholder="Ex : 08h30";$("heure").focus();}
+  if(d){majMaintenant(false);$("hh").focus();}
   else{majMaintenant(true);}
 }
 $("auj").addEventListener("click",function(){tap();majJour(false);});
@@ -593,9 +618,9 @@ micro("depart");micro("arrivee");
 
 /* Envoi */
 function envoyer(){
-  var d={demain:demain,heure:maintenant?"maintenant":$("heure").value.trim(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
+  var d={demain:demain,heure:maintenant?"maintenant":getHeure(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
   d.depart=resoudre(d.depart)||d.depart;d.arrivee=resoudre(d.arrivee)||d.arrivee;
-  if(demain&&!$("heure").value.trim()){$("msg").textContent="Choisis l'heure de demain.";return;}
+  if(demain&&!getHeure()){$("msg").textContent="Choisis l'heure de demain.";return;}
   if(!d.heure||!d.depart||!d.arrivee){$("msg").textContent="Remplis l'heure, le départ et l'arrivée.";return;}
   $("ok").disabled=true;$("ok").textContent="Envoi…";$("msg").textContent="";
   d.initData=tg.initData;
