@@ -113,7 +113,8 @@ def api(method, _timeout=30, **params):
 
 
 def envoyer(texte, reply_markup=None, reply_to=None, silencieux=False):
-    params = {"chat_id": CHAT_ID, "text": texte, "parse_mode": "HTML"}
+    params = {"chat_id": CHAT_ID, "text": texte, "parse_mode": "HTML",
+              "link_preview_options": {"is_disabled": True}}
     if silencieux:
         params["disable_notification"] = True
     if reply_markup:
@@ -228,11 +229,17 @@ def texte_copie(c):
     return "\n".join(l)[:256]
 
 
+def lien_carte(adresse):
+    """Petit lien 🗺 : ouvre l'adresse dans l'application de cartes."""
+    url = "https://www.google.com/maps/search/?api=1&amp;query=" + urllib.parse.quote(adresse, safe="")
+    return f' <a href="{url}">🗺</a>'
+
+
 def texte_course(c):
     lignes = [
         f"🕐 <b>{echapper(c['heure'])}</b> · <i>{echapper(c['donneur_nom'])}, {c['poste_a']}</i>",
-        f"📍 <b>{echapper(c['depart'])}</b>",
-        f"🏁 <b>{echapper(c['arrivee'])}</b>",
+        f"📍 <b>{echapper(c['depart'])}</b>{lien_carte(c['depart'])}",
+        f"🏁 <b>{echapper(c['arrivee'])}</b>{lien_carte(c['arrivee'])}",
     ]
     if c.get("commentaire"):
         lignes.append(f"💬 {echapper(c['commentaire'])}")
@@ -265,7 +272,8 @@ def clavier_course(c):
 
 def maj_carte(c):
     api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
-        text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c))
+        text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c),
+        link_preview_options={"is_disabled": True})
 
 
 # --------------------------------------------------------------------------- courses
