@@ -510,9 +510,46 @@ function suggestions(idInput,idListe){
 suggestions("depart","liste-depart");
 suggestions("arrivee","liste-arrivee");
 
+/* Raccourcis à l'écrit : taper « pasteur », « tzanck », « T2 »... en sortant du champ le remplace par le nom complet */
+var ETAB=[
+ ["Hôpital Les Sources, Nice",["les sources","les sources b1","sources"]],
+ ["Clinique Saint George, Nice",["saint george","saint georges","saint-george","saint-georges","csg","stg"]],
+ ["Hôpital Pasteur, Nice",["pasteur","pasteur 2"]],
+ ["Hôpital de l'Archet, Nice",["archet","archet 1","archet 2","l'archet"]],
+ ["Hôpital Lenval, Nice",["lenval"]],
+ ["Centre Antoine Lacassagne, Nice",["lacassagne","antoine lacassagne","cal"]],
+ ["Clinique du Parc Impérial, Nice",["parc imperial","cpi"]],
+ ["Clinique Saint-Antoine, Nice",["saint antoine","saint-antoine"]],
+ ["Polyclinique Santa Maria, Nice",["santa maria"]],
+ ["Clinique Saint-François, Nice",["saint francois","saint-francois"]],
+ ["Hôpital Saint-Roch, Nice",["saint roch","saint-roch"]],
+ ["Hôpital de Cimiez, Nice",["cimiez"]],
+ ["Polyclinique Saint Jean, Cagnes-sur-Mer",["saint jean"]],
+ ["Institut Arnault Tzanck, Saint-Laurent-du-Var",["tzanck","crc nice"]],
+ ["Aéroport Nice Côte d'Azur - Terminal 1",["t1","terminal 1"]],
+ ["Aéroport Nice Côte d'Azur - Terminal 2",["t2","terminal 2"]],
+ ["Aéroport Nice Côte d'Azur",["aeroport","aeroport de nice","aeroport nice"]]
+];
+function sansAccents(t){return t.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[’]/g,"'").toLowerCase().replace(/ +/g," ").trim();}
+function resoudre(v){
+  v=(v||"").trim();
+  if(!v||/[0-9]{2,}/.test(v))return null;
+  var n=sansAccents(v),exact=null,pref=[];
+  ETAB.forEach(function(e){e[1].forEach(function(a){
+    if(a===n){exact=e;}
+    else if(n.length>=4&&a.indexOf(n)===0&&pref.indexOf(e)<0){pref.push(e);}
+  });});
+  if(exact)return exact[0];
+  return pref.length===1?pref[0][0]:null;
+}
+["depart","arrivee"].forEach(function(id){
+  $(id).addEventListener("blur",function(){var r=resoudre($(id).value);if(r)$(id).value=r;});
+});
+
 /* Envoi */
 function envoyer(){
   var d={heure:maintenant?"maintenant":$("heure").value.trim(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
+  d.depart=resoudre(d.depart)||d.depart;d.arrivee=resoudre(d.arrivee)||d.arrivee;
   if(!d.heure||!d.depart||!d.arrivee){$("msg").textContent="Remplis l'heure, le départ et l'arrivée.";return;}
   $("ok").disabled=true;$("ok").textContent="Envoi…";$("msg").textContent="";
   d.initData=tg.initData;
