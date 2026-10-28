@@ -408,6 +408,7 @@ function majMaintenant(actif){
 $("maintenant").addEventListener("click",function(){tap();majMaintenant(!maintenant);});
 $("heure").addEventListener("input",function(){if(maintenant&&$("heure").value){majMaintenant(false);}});
 $("heure").addEventListener("focus",function(){if(maintenant){majMaintenant(false);}});
+majMaintenant(true); /* « Maintenant » coché d'office : on gagne un geste en roulant */
 
 /* Adresses : suggestions (facultatives, on peut toujours écrire librement) */
 function suggestions(idInput,idListe){
