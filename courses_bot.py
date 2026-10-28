@@ -4,7 +4,7 @@
 Bot Telegram de gestion de courses entre chauffeurs.
 
 Fonctionnement :
-  - Un message épinglé « Tu lâches une course ? » avec bouton « ➕ Donner une course » ouvre le formulaire (commande /clavier pour le poser).
+  - Clavier fixe en bas du groupe : « 🚖 Donner une course » | « 🟢 Je suis libre » (commande /clavier).
   - Appui : le bot affiche 60 s un bouton « Ouvrir le formulaire » (mini-application : heure avec bouton
     Maintenant, départ, arrivée avec suggestions d'adresses, commentaire). Sans COURSES_APP_LINK, il pose
     les questions une par une dans le groupe.
@@ -56,6 +56,8 @@ LOCK = threading.RLock()
 TZ = ZoneInfo("Europe/Paris")
 API = f"https://api.telegram.org/bot{TOKEN}"
 BOUTON_DONNER = "🚖 Donner une course"
+BOUTON_LIBRE = "🟢 Je suis libre"
+LIBRE_SECONDS = 30 * 60
 MAX_CHAMP = 120
 
 ORDRE_ETAPES = ["heure", "depart", "arrivee", "commentaire"]
@@ -69,7 +71,7 @@ QUESTIONS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("courses_bot")
 
-state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}}
+state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}, "libres": {}}
 INVITATION_SECONDS = 60  # durée d'affichage du bouton « Ouvrir le formulaire »
 
 
@@ -151,6 +153,23 @@ def inviter_formulaire(user):
         state["invitations"][uid] = {"id": mid, "ts": time.time()}
 
 
+def declarer_libre(user):
+    """Bouton « Je suis libre » : un petit message discret, remplacé si on rappuie, effacé après 30 min."""
+    uid = str(user["id"])
+    ancien = state["libres"].pop(uid, None)
+    if ancien:
+        supprimer(ancien["id"])
+    mid = envoyer(f"🟢 <b>{echapper(nom_affiche(user))}</b> est libre", silencieux=True)
+    if mid:
+        state["libres"][uid] = {"id": mid, "ts": time.time()}
+
+
+def retirer_libre(uid):
+    ancien = state["libres"].pop(str(uid), None)
+    if ancien:
+        supprimer(ancien["id"])
+
+
 def retirer_invitation(uid):
     inv = state["invitations"].pop(str(uid), None)
     if inv:
@@ -158,27 +177,18 @@ def retirer_invitation(uid):
 
 
 def envoyer_clavier():
-    """/clavier ou /start : retire l'ancien bouton du bas et pose un message épinglé avec le bouton du formulaire."""
+    """/clavier ou /start : pose le clavier fixe (Donner une course | Je suis libre) en bas du groupe."""
     supprimer(state.get("bouton_id"))
     state["bouton_id"] = None
-    if not APP_LINK:
-        envoyer(
-            "🚖 Le bouton <b>Donner une course</b> est actif en bas de l'écran.",
-            reply_markup={"keyboard": [[{"text": BOUTON_DONNER}]], "resize_keyboard": True, "is_persistent": True},
-        )
-        return
-    # enlève le clavier fixe de l'ancienne version (message vide supprimé aussitôt)
-    rm = envoyer("·", reply_markup={"remove_keyboard": True}, silencieux=True)
-    supprimer(rm)
-    supprimer(state.get("epingle_id"))
-    mid = envoyer(
-        "Tu lâches une course ? Clique ici 👇",
-        reply_markup={"inline_keyboard": [[{"text": "➕ Donner une course", "url": APP_LINK}]]},
+    envoyer(
+        "Boutons actifs en bas de l'écran.",
+        reply_markup={
+            "keyboard": [[{"text": BOUTON_DONNER}, {"text": BOUTON_LIBRE}]],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        },
         silencieux=True,
     )
-    if mid:
-        state["epingle_id"] = mid
-        api("pinChatMessage", chat_id=CHAT_ID, message_id=mid, disable_notification=True)
 
 
 # --------------------------------------------------------------------------- textes
@@ -535,6 +545,7 @@ def creer_course_depuis_formulaire(corps):
     with LOCK:
         publier_course(w)
         retirer_invitation(user["id"])
+        retirer_libre(user["id"])
         sauver_etat()
     return 200, {"ok": True}
 
@@ -598,6 +609,9 @@ def traiter_message(m):
     if commande in ("/clavier", "/start"):
         supprimer(m["message_id"])
         envoyer_clavier()
+    elif texte == BOUTON_LIBRE:
+        supprimer(m["message_id"])
+        declarer_libre(user)
     elif texte == BOUTON_DONNER:
         supprimer(m["message_id"])
         if APP_LINK:
@@ -657,6 +671,7 @@ def traiter_callback(cb):
         c["refus"].pop(str(uid), None)
         c["pris_par_id"], c["pris_par_nom"] = uid, nom
         cloturer(c, "prise")
+        retirer_libre(uid)
         repondre_callback(cb_id, "Course acceptée ✅")
         # La carte affiche déjà « Prise par … » : pas de message en plus.
     elif action == "ref":
@@ -695,6 +710,11 @@ def maintenance():
         if now - inv["ts"] > INVITATION_SECONDS:
             supprimer(inv["id"])
             del state["invitations"][uid]
+            change = True
+    for uid, l in list(state["libres"].items()):
+        if now - l["ts"] > LIBRE_SECONDS:
+            supprimer(l["id"])
+            del state["libres"][uid]
             change = True
     for cle, w in list(state["wizards"].items()):
         if now - w["debut"] > WIZARD_TIMEOUT_SECONDES:
