@@ -232,7 +232,7 @@ def texte_copie(c):
 def lien_carte(adresse):
     """Petit lien 🗺 : ouvre l'adresse dans l'application de cartes."""
     url = "https://www.google.com/maps/search/?api=1&amp;query=" + urllib.parse.quote(adresse, safe="")
-    return f' <a href="{url}">🗺</a>'
+    return f' <a href="{url}">↗ Plan</a>'
 
 
 def texte_course(c):
