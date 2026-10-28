@@ -229,17 +229,17 @@ def texte_copie(c):
     return "\n".join(l)[:256]
 
 
-def lien_carte(adresse):
-    """Petit lien 🗺 : ouvre l'adresse dans l'application de cartes."""
+def adresse_cliquable(adresse):
+    """L'adresse elle-même est le lien : ouvre l'application de cartes."""
     url = "https://www.google.com/maps/search/?api=1&amp;query=" + urllib.parse.quote(adresse, safe="")
-    return f' <a href="{url}">↗ Plan</a>'
+    return f'<a href="{url}">{echapper(adresse)}</a>'
 
 
 def texte_course(c):
     lignes = [
         f"🕐 <b>{echapper(c['heure'])}</b> · <i>{echapper(c['donneur_nom'])}, {c['poste_a']}</i>",
-        f"📍 <b>{echapper(c['depart'])}</b>{lien_carte(c['depart'])}",
-        f"🏁 <b>{echapper(c['arrivee'])}</b>{lien_carte(c['arrivee'])}",
+        f"📍 <b>{adresse_cliquable(c['depart'])}</b>",
+        f"🏁 <b>{adresse_cliquable(c['arrivee'])}</b>",
     ]
     if c.get("commentaire"):
         lignes.append(f"💬 {echapper(c['commentaire'])}")
@@ -266,7 +266,7 @@ def clavier_course(c):
          {"text": "❌ Refuser", "callback_data": f"ref:{cid}"}],
         [{"text": "🤝 Trouvé", "callback_data": f"found:{cid}"},
          {"text": "🗑 Annuler", "callback_data": f"cancel:{cid}"},
-         {"text": "📋 Copier", "copy_text": {"text": texte_copie(c)}}],
+         {"text": "Copier", "copy_text": {"text": texte_copie(c)}}],
     ]}
 
 
