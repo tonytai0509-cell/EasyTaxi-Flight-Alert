@@ -627,12 +627,17 @@ function envoyer(){
   fetch("/api/course",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})
     .then(function(r){return r.json();})
     .then(function(j){
-      if(j.ok){try{tg.HapticFeedback.notificationOccurred("success");}catch(e){}tg.close();}
+      if(j.ok){try{tg.HapticFeedback.notificationOccurred("success");}catch(e){}tg.close();setTimeout(function(){tg.close();},400);}
       else{$("msg").textContent=j.erreur||"Erreur, réessaie.";$("ok").disabled=false;$("ok").textContent="Envoyer au groupe";}
     })
     .catch(function(){$("msg").textContent="Pas de connexion, réessaie.";$("ok").disabled=false;$("ok").textContent="Envoyer au groupe";});
 }
 $("ok").addEventListener("click",envoyer);
+/* Fermeture automatique après 2 min d'inactivité (évite la barre « Dispatch » oubliée en bas) */
+var idleT=null;
+function armerIdle(){clearTimeout(idleT);idleT=setTimeout(function(){tg.close();},120000);}
+["touchstart","click","input","keydown","scroll"].forEach(function(e){document.addEventListener(e,armerIdle,{passive:true});});
+armerIdle();
 </script></body></html>"""
 
 
