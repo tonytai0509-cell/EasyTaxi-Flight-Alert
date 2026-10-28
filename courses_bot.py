@@ -210,26 +210,33 @@ def normaliser_heure(txt):
     return t
 
 
+def texte_copie(c):
+    """Texte à copier/coller dans un autre groupe (sans le nom du donneur)."""
+    l = [f"🕐 {c['heure']}", f"📍 {c['depart']}", f"🏁 {c['arrivee']}"]
+    if c.get("commentaire"):
+        l.append(f"💬 {c['commentaire']}")
+    return "\n".join(l)[:256]
+
+
 def texte_course(c):
     lignes = [
-        f"🚖 <b>COURSE</b> · 🕐 <b>{echapper(c['heure'])}</b>",
-        f"📍 Départ : <b>{echapper(c['depart'])}</b>",
-        f"🏁 Arrivée : <b>{echapper(c['arrivee'])}</b>",
+        f"🕐 <b>{echapper(c['heure'])}</b> · <i>{echapper(c['donneur_nom'])}, {c['poste_a']}</i>",
+        f"📍 <b>{echapper(c['depart'])}</b>",
+        f"🏁 <b>{echapper(c['arrivee'])}</b>",
     ]
     if c.get("commentaire"):
         lignes.append(f"💬 {echapper(c['commentaire'])}")
-    lignes.append(f"<i>Donnée par {echapper(c['donneur_nom'])} · postée à {c['poste_a']}</i>")
-    for nom in c["refus"].values():
-        lignes.append(f"❌ {echapper(nom)} ne peut pas")
+    if c["refus"]:
+        lignes.append("❌ " + ", ".join(echapper(n) for n in c["refus"].values()))
     statut = c["statut"]
     if statut == "prise":
-        lignes.append(f"\n✅ <b>Prise par {echapper(c['pris_par_nom'])}</b>")
+        lignes.append(f"✅ <b>Prise par {echapper(c['pris_par_nom'])}</b>")
     elif statut == "trouvee":
-        lignes.append("\n🤝 <b>Trouvée en dehors du groupe</b>")
+        lignes.append("🤝 <b>Trouvée en dehors du groupe</b>")
     elif statut == "annulee":
-        lignes.append("\n🗑 <b>Course annulée</b>")
+        lignes.append("🗑 <b>Course annulée</b>")
     elif statut == "expiree":
-        lignes.append("\n⌛ <b>Personne n'a pris cette course</b>")
+        lignes.append("⌛ <b>Personne n'a pris cette course</b>")
     return "\n".join(lignes)
 
 
@@ -240,8 +247,9 @@ def clavier_course(c):
     return {"inline_keyboard": [
         [{"text": "✅ Accepter", "callback_data": f"acc:{cid}"},
          {"text": "❌ Refuser", "callback_data": f"ref:{cid}"}],
-        [{"text": "🤝 Trouvé ailleurs", "callback_data": f"found:{cid}"},
-         {"text": "🗑 Annuler", "callback_data": f"cancel:{cid}"}],
+        [{"text": "🤝 Trouvé", "callback_data": f"found:{cid}"},
+         {"text": "🗑 Annuler", "callback_data": f"cancel:{cid}"},
+         {"text": "📋 Copier", "copy_text": {"text": texte_copie(c)}}],
     ]}
 
 
