@@ -221,6 +221,11 @@ def normaliser_heure(txt):
     return t
 
 
+# Bouton Copier : Telegram affiche déjà son icône « deux carrés », on met un texte invisible.
+# Si Telegram refuse un texte invisible, on retombe automatiquement sur le mot « Copier ».
+COPIER_LABEL = "\u2800"
+
+
 def texte_copie(c):
     """Texte à copier/coller dans un autre groupe (sans le nom du donneur)."""
     l = [f"🕐 {c['heure']}", f"📍 {c['depart']}", f"🏁 {c['arrivee']}"]
@@ -266,14 +271,20 @@ def clavier_course(c):
          {"text": "❌ Refuser", "callback_data": f"ref:{cid}"}],
         [{"text": "🤝 Trouvé", "callback_data": f"found:{cid}"},
          {"text": "🗑 Annuler", "callback_data": f"cancel:{cid}"},
-         {"text": "Copier", "copy_text": {"text": texte_copie(c)}}],
+         {"text": COPIER_LABEL, "copy_text": {"text": texte_copie(c)}}],
     ]}
 
 
 def maj_carte(c):
-    api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
-        text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c),
-        link_preview_options={"is_disabled": True})
+    global COPIER_LABEL
+    d = api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
+            text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c),
+            link_preview_options={"is_disabled": True})
+    if not d.get("ok") and COPIER_LABEL != "Copier" and "not modified" not in str(d.get("description", "")):
+        COPIER_LABEL = "Copier"
+        api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
+            text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c),
+            link_preview_options={"is_disabled": True})
 
 
 # --------------------------------------------------------------------------- courses
@@ -322,6 +333,11 @@ def publier_course(w):
         "rappel_id": None,
     }
     mid = envoyer(texte_course(c), reply_markup=clavier_course(c))
+    if not mid:
+        global COPIER_LABEL
+        if COPIER_LABEL != "Copier":
+            COPIER_LABEL = "Copier"
+            mid = envoyer(texte_course(c), reply_markup=clavier_course(c))
     if not mid:
         envoyer("⚠️ La course n'a pas pu être publiée, réessaie.")
         return
