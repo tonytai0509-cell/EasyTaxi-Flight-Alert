@@ -68,6 +68,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("courses_bot")
 
 state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None}
+bouton_a_remonter = {"depuis": None}  # horodatage du dernier message qui a repoussé le bouton vers le haut
+BOUTON_DELAI_SECONDS = 4
 
 
 # --------------------------------------------------------------------------- état
@@ -107,15 +109,20 @@ def api(method, _timeout=30, **params):
         return {"ok": False}
 
 
-def envoyer(texte, reply_markup=None, reply_to=None):
+def envoyer(texte, reply_markup=None, reply_to=None, silencieux=False):
     params = {"chat_id": CHAT_ID, "text": texte, "parse_mode": "HTML"}
+    if silencieux:
+        params["disable_notification"] = True
     if reply_markup:
         params["reply_markup"] = reply_markup
     if reply_to:
         params["reply_to_message_id"] = reply_to
         params["allow_sending_without_reply"] = True
     d = api("sendMessage", **params)
-    return (d.get("result") or {}).get("message_id") if d.get("ok") else None
+    mid = (d.get("result") or {}).get("message_id") if d.get("ok") else None
+    if mid and not silencieux:
+        signaler_message()
+    return mid
 
 
 def supprimer(message_id):
@@ -131,13 +138,22 @@ def repondre_callback(cb_id, texte=None, alerte=False):
     api("answerCallbackQuery", **params)
 
 
+def signaler_message():
+    """Un message vient d'être posté dans le groupe : le bouton n'est plus tout en bas."""
+    if APP_LINK:
+        bouton_a_remonter["depuis"] = time.time()
+
+
 def poster_bouton():
     """Poste le bouton qui ouvre le formulaire, en supprimant l'ancien pour qu'il soit toujours en bas."""
+    bouton_a_remonter["depuis"] = None
     supprimer(state.get("bouton_id"))
     state["bouton_id"] = envoyer(
         "🚖 Pour donner une course, appuie sur le bouton ci-dessous.",
         reply_markup={"inline_keyboard": [[{"text": BOUTON_DONNER, "url": APP_LINK}]]},
+        silencieux=True,
     )
+    bouton_a_remonter["depuis"] = None
 
 
 def envoyer_clavier():
@@ -276,8 +292,6 @@ def publier_course(w):
         return
     c["message_id"] = mid
     state["courses"][cid] = c
-    if APP_LINK:
-        poster_bouton()
 
 
 # --------------------------------------------------------------------------- saisie guidée
@@ -558,6 +572,8 @@ def traiter_message(m):
             logger.warning(f"Message ignoré d'un autre groupe : id={chat.get('id')} ({chat.get('title')})")
         return
     user = m.get("from") or {}
+    if not user.get("is_bot"):
+        signaler_message()
     texte = (m.get("text") or "").strip()
     if user.get("is_bot") or not user.get("id") or not texte:
         return
@@ -660,6 +676,10 @@ def maintenance():
     """Saisies abandonnées, rappels, expiration, nettoyage. Retourne True si l'état a changé."""
     change = False
     now = time.time()
+    depuis = bouton_a_remonter["depuis"]
+    if APP_LINK and depuis and now - depuis >= BOUTON_DELAI_SECONDS:
+        poster_bouton()
+        change = True
     for cle, w in list(state["wizards"].items()):
         if now - w["debut"] > WIZARD_TIMEOUT_SECONDES:
             supprimer(w.get("prompt_id"))
