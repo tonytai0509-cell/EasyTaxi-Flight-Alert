@@ -11,14 +11,14 @@ Fonctionnement :
   - Il poste une carte dans le groupe avec ✅ Accepter / ❌ Refuser.
   - Le premier qui accepte prend la course (la carte devient « Prise par X »).
   - Chaque refus ajoute une ligne « X ne peut pas ».
-  - Tant que la course est libre : rappel toutes les 2 minutes.
+  - Tant que la course est libre : rappel toutes les 5 minutes.
   - Le donneur dispose de 🤝 Trouvé ailleurs (course réglée hors groupe) et 🗑 Annuler.
 
 Variables d'environnement :
   COURSES_TOKEN                token du bot (BotFather)
   COURSES_CHAT_ID              id du groupe (ex : -1001234567890)
   DATA_DIR                     dossier de l'état persistant (défaut : .)
-  COURSES_RAPPEL_SECONDES      délai entre rappels (défaut : 120)
+  COURSES_RAPPEL_SECONDES      délai entre rappels (défaut : 300)
   COURSES_EXPIRATION_MINUTES   arrêt des rappels si personne ne prend la course (défaut : 120)
   COURSES_WIZARD_TIMEOUT       délai max d'une saisie abandonnée, en secondes (défaut : 180)
   COURSES_APP_LINK             lien direct de la mini-application (ex : https://t.me/MonBot/course).
@@ -45,7 +45,7 @@ TOKEN = os.getenv("COURSES_TOKEN")
 CHAT_ID = os.getenv("COURSES_CHAT_ID")
 DATA_DIR = os.getenv("DATA_DIR", ".")
 STATE_FILE = os.getenv("COURSES_STATE_FILE", os.path.join(DATA_DIR, "courses_state.json"))
-RAPPEL_SECONDES = int(os.getenv("COURSES_RAPPEL_SECONDES", "120"))
+RAPPEL_SECONDES = int(os.getenv("COURSES_RAPPEL_SECONDES", "300"))
 EXPIRATION_MINUTES = int(os.getenv("COURSES_EXPIRATION_MINUTES", "120"))
 WIZARD_TIMEOUT_SECONDES = int(os.getenv("COURSES_WIZARD_TIMEOUT", "180"))
 CONSERVATION_JOURS = 7
