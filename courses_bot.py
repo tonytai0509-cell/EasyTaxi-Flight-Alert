@@ -237,7 +237,7 @@ def texte_course(c):
     if c.get("commentaire"):
         lignes.append(f"💬 {echapper(c['commentaire'])}")
     if c["refus"]:
-        lignes.append("❌ " + ", ".join(echapper(n) for n in c["refus"].values()))
+        lignes.append("❌ " + ", ".join(echapper(n.split()[0]) for n in c["refus"].values() if n.strip()))
     statut = c["statut"]
     if statut == "prise":
         lignes.append(f"✅ <b>Prise par {echapper(c['pris_par_nom'])}</b>")
