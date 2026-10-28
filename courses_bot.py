@@ -329,43 +329,134 @@ PAGE_FORMULAIRE = """<!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Donner une course</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root{--bg:var(--tg-theme-bg-color,#fff);--fg:var(--tg-theme-text-color,#111);--hint:var(--tg-theme-hint-color,#777);
---btn:var(--tg-theme-button-color,#2481cc);--btnfg:var(--tg-theme-button-text-color,#fff);--card:var(--tg-theme-secondary-bg-color,#f1f1f1)}
-*{box-sizing:border-box}
-body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:17px/1.3 -apple-system,Roboto,Segoe UI,sans-serif}
-h1{font-size:20px;margin:0 0 16px}
-label{display:block;font-size:14px;color:var(--hint);margin:14px 0 6px}
-input{width:100%;padding:14px;font-size:18px;border:2px solid transparent;border-radius:12px;background:var(--card);color:var(--fg);outline:none}
+:root{--bg:var(--tg-theme-bg-color,#ffffff);--fg:var(--tg-theme-text-color,#111);--hint:var(--tg-theme-hint-color,#7d8590);
+--btn:var(--tg-theme-button-color,#2481cc);--btnfg:var(--tg-theme-button-text-color,#fff);--card:var(--tg-theme-secondary-bg-color,#f1f3f5);
+--line:rgba(127,127,127,.25)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;padding:22px 18px 40px;background:var(--bg);color:var(--fg);font:16px/1.3 "Poppins",-apple-system,Roboto,"Segoe UI",sans-serif}
+h1{margin:6px 0 4px;text-align:center;font-size:27px;font-weight:700;letter-spacing:.2px}
+.trait{width:56px;height:4px;border-radius:4px;background:var(--btn);margin:10px auto 26px}
+label{display:block;font-size:12px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--hint);margin:18px 4px 7px}
+input{width:100%;padding:15px 16px;font:500 18px "Poppins",-apple-system,Roboto,sans-serif;border:2px solid transparent;border-radius:14px;background:var(--card);color:var(--fg);outline:none;transition:border-color .15s}
 input:focus{border-color:var(--btn)}
-button{width:100%;margin-top:22px;padding:16px;font-size:18px;font-weight:600;border:0;border-radius:12px;background:var(--btn);color:var(--btnfg)}
-button:disabled{opacity:.5}
-#msg{margin-top:14px;color:#d33;min-height:22px;font-size:15px}
+input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
+.ligne{display:flex;gap:10px}
+.ligne input{flex:1;min-width:0}
+.maintenant{flex:0 0 auto;padding:0 18px;border:2px solid var(--btn);border-radius:14px;background:transparent;color:var(--btn);font:600 16px "Poppins",-apple-system,Roboto,sans-serif}
+.maintenant.actif{background:var(--btn);color:var(--btnfg)}
+.champ{position:relative}
+.liste{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:20;background:var(--bg);border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 28px rgba(0,0,0,.28);overflow:hidden;display:none}
+.liste div{padding:12px 16px;border-top:1px solid var(--line);font-size:16px;font-weight:500}
+.liste div:first-child{border-top:0}
+.liste div small{display:block;color:var(--hint);font-size:13px;font-weight:400;margin-top:1px}
+.liste div:active{background:var(--card)}
+.envoyer{width:100%;margin-top:30px;padding:17px;font:600 18px "Poppins",-apple-system,Roboto,sans-serif;border:0;border-radius:14px;background:var(--btn);color:var(--btnfg)}
+.envoyer:disabled{opacity:.55}
+#msg{margin-top:14px;color:#e5484d;min-height:22px;font-size:15px;text-align:center}
 </style></head><body>
-<h1>🚖 Donner une course</h1>
-<label for="heure">⏰ Heure</label>
-<input id="heure" placeholder="14h30 ou maintenant" autocomplete="off" maxlength="40">
-<label for="depart">📍 Départ</label>
-<input id="depart" placeholder="Ex : Gare de Nice" autocomplete="off" maxlength="120">
-<label for="arrivee">🏁 Arrivée</label>
-<input id="arrivee" placeholder="Ex : Aéroport T2" autocomplete="off" maxlength="120">
-<label for="commentaire">💬 Commentaire (facultatif)</label>
+<h1>Donner une course</h1>
+<div class="trait"></div>
+
+<label for="heure">Heure</label>
+<div class="ligne">
+  <input id="heure" placeholder="Ex : 14h30" autocomplete="off" maxlength="40">
+  <button type="button" class="maintenant" id="maintenant">Maintenant</button>
+</div>
+
+<label for="depart">Départ</label>
+<div class="champ"><input id="depart" placeholder="Ex : Gare de Nice" autocomplete="off" maxlength="120"><div class="liste" id="liste-depart"></div></div>
+
+<label for="arrivee">Arrivée</label>
+<div class="champ"><input id="arrivee" placeholder="Ex : Aéroport Nice" autocomplete="off" maxlength="120"><div class="liste" id="liste-arrivee"></div></div>
+
+<label for="commentaire">Commentaire (facultatif)</label>
 <input id="commentaire" placeholder="Ex : 2 passagers, bagages" autocomplete="off" maxlength="120">
-<button id="ok">✅ Envoyer au groupe</button>
+
+<button class="envoyer" id="ok" type="button">Envoyer au groupe</button>
 <div id="msg"></div>
+
 <script>
-const tg=window.Telegram.WebApp;tg.ready();tg.expand();
-const $=id=>document.getElementById(id);
-async function envoyer(){
-  const d={heure:$("heure").value.trim(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
+var tg=(window.Telegram&&window.Telegram.WebApp)||{ready:function(){},expand:function(){},close:function(){},initData:""};
+try{tg.ready();tg.expand();}catch(e){}
+var $=function(id){return document.getElementById(id)};
+function tap(){try{tg.HapticFeedback.impactOccurred("light");}catch(e){}}
+
+/* Heure + bouton Maintenant */
+var maintenant=false;
+function majMaintenant(actif){
+  maintenant=actif;
+  $("maintenant").classList.toggle("actif",actif);
+  if(actif){$("heure").value="";$("heure").placeholder="Maintenant";}
+  else{$("heure").placeholder="Ex : 14h30";}
+}
+$("maintenant").addEventListener("click",function(){tap();majMaintenant(!maintenant);});
+$("heure").addEventListener("input",function(){if(maintenant&&$("heure").value){majMaintenant(false);}});
+$("heure").addEventListener("focus",function(){if(maintenant){majMaintenant(false);}});
+
+/* Adresses : suggestions (facultatives, on peut toujours écrire librement) */
+function suggestions(idInput,idListe){
+  var inp=$(idInput),liste=$(idListe),minuteur=null,ctl=null;
+  function cacher(){liste.style.display="none";liste.innerHTML="";}
+  function libelle(f){
+    var p=f.properties||{};
+    var principal=p.name||p.street||"";
+    var lieu=p.city||p.locality||p.district||p.county||"";
+    if(!principal)return null;
+    return {texte:principal+(lieu&&lieu!==principal?", "+lieu:""),principal:principal,lieu:(lieu&&lieu!==principal)?lieu:""};
+  }
+  function afficher(features){
+    var vus={},items=[];
+    (features||[]).forEach(function(f){
+      var l=libelle(f);
+      if(l&&!vus[l.texte]){vus[l.texte]=1;items.push(l);}
+    });
+    liste.innerHTML="";
+    if(!items.length){cacher();return;}
+    items.slice(0,5).forEach(function(l){
+      var d=document.createElement("div");
+      d.appendChild(document.createTextNode(l.principal));
+      if(l.lieu){var s=document.createElement("small");s.textContent=l.lieu;d.appendChild(s);}
+      d.addEventListener("pointerdown",function(e){e.preventDefault();inp.value=l.texte;cacher();tap();});
+      liste.appendChild(d);
+    });
+    liste.style.display="block";
+  }
+  function chercher(q){
+    if(ctl){try{ctl.abort();}catch(e){}}
+    ctl=(window.AbortController?new AbortController():null);
+    var url="https://photon.komoot.io/api/?lang=fr&limit=8&lat=43.70&lon=7.26&location_bias_scale=0.7&q="+encodeURIComponent(q);
+    fetch(url,ctl?{signal:ctl.signal}:{}).then(function(r){return r.json();}).then(function(j){
+      if(inp.value.trim()===q&&document.activeElement===inp)afficher(j.features);
+    }).catch(function(){});
+  }
+  inp.addEventListener("input",function(){
+    clearTimeout(minuteur);
+    var q=inp.value.trim();
+    if(q.length<3){cacher();return;}
+    minuteur=setTimeout(function(){chercher(q);},260);
+  });
+  inp.addEventListener("blur",function(){setTimeout(cacher,150);});
+}
+suggestions("depart","liste-depart");
+suggestions("arrivee","liste-arrivee");
+
+/* Envoi */
+function envoyer(){
+  var d={heure:maintenant?"maintenant":$("heure").value.trim(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
   if(!d.heure||!d.depart||!d.arrivee){$("msg").textContent="Remplis l'heure, le départ et l'arrivée.";return;}
-  $("ok").disabled=true;$("msg").textContent="";
-  try{
-    const r=await fetch("/api/course",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData,...d})});
-    const j=await r.json();
-    if(j.ok){tg.close();}else{$("msg").textContent=j.erreur||"Erreur, réessaie.";$("ok").disabled=false;}
-  }catch(e){$("msg").textContent="Pas de connexion, réessaie.";$("ok").disabled=false;}
+  $("ok").disabled=true;$("ok").textContent="Envoi…";$("msg").textContent="";
+  d.initData=tg.initData;
+  fetch("/api/course",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})
+    .then(function(r){return r.json();})
+    .then(function(j){
+      if(j.ok){try{tg.HapticFeedback.notificationOccurred("success");}catch(e){}tg.close();}
+      else{$("msg").textContent=j.erreur||"Erreur, réessaie.";$("ok").disabled=false;$("ok").textContent="Envoyer au groupe";}
+    })
+    .catch(function(){$("msg").textContent="Pas de connexion, réessaie.";$("ok").disabled=false;$("ok").textContent="Envoyer au groupe";});
 }
 $("ok").addEventListener("click",envoyer);
 </script></body></html>"""
