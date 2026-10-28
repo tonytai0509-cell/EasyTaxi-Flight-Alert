@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot Telegram de gestion de courses entre chauffeurs (v4).
+Bot Telegram de gestion de courses entre chauffeurs.
 
 Fonctionnement :
   - Un bouton fixe « 🚖 Donner une course » reste en bas du groupe (commande /clavier).
@@ -638,11 +638,7 @@ def traiter_callback(cb):
         c["pris_par_id"], c["pris_par_nom"] = uid, nom
         cloturer(c, "prise")
         repondre_callback(cb_id, "Course acceptée ✅")
-        envoyer(
-            f"✅ {mention(c['donneur_id'], c['donneur_nom'])}, <b>{echapper(nom)}</b> a pris ta course "
-            f"de {echapper(c['heure'])} ({echapper(c['depart'])} → {echapper(c['arrivee'])}).",
-            reply_to=c["message_id"],
-        )
+        # La carte affiche déjà « Prise par … » : pas de message en plus.
     elif action == "ref":
         if uid == c["donneur_id"]:
             repondre_callback(cb_id, "Tu es le donneur : utilise Annuler.")
