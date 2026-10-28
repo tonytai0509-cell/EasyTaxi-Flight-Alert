@@ -322,6 +322,7 @@ def publier_course(w):
         "depart": w["depart"],
         "arrivee": w["arrivee"],
         "commentaire": w.get("commentaire", ""),
+        "demain": bool(w.get("demain")),
         "poste_a": datetime.now(TZ).strftime("%H:%M"),
         "cree_ts": time.time(),
         "dernier_rappel_ts": time.time(),
@@ -411,6 +412,9 @@ input:focus{border-color:var(--btn)}
 input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .ligne{display:flex;gap:10px}
 .ligne input{flex:1;min-width:0}
+.jour{display:flex;gap:8px;margin-top:8px}
+.jour button{flex:1;padding:9px;border:2px solid var(--line);border-radius:12px;background:transparent;color:var(--hint);font:600 15px "Poppins",-apple-system,Roboto,sans-serif}
+.jour button.actif{border-color:var(--btn);color:var(--btn)}
 .maintenant{flex:0 0 auto;padding:0 18px;border:2px solid var(--btn);border-radius:14px;background:transparent;color:var(--btn);font:600 16px "Poppins",-apple-system,Roboto,sans-serif}
 .maintenant.actif{background:var(--btn);color:var(--btnfg)}
 .champ{position:relative}
@@ -431,6 +435,7 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
   <input id="heure" placeholder="Ex : 14h30" autocomplete="off" maxlength="40">
   <button type="button" class="maintenant" id="maintenant">Maintenant</button>
 </div>
+<div class="jour"><button type="button" id="auj" class="actif">Aujourd'hui</button><button type="button" id="dem">Demain</button></div>
 
 <label for="depart">Départ</label>
 <div class="champ"><input id="depart" placeholder="Ex : Gare de Nice" autocomplete="off" maxlength="120"><div class="liste" id="liste-depart"></div></div>
@@ -462,6 +467,19 @@ $("maintenant").addEventListener("click",function(){tap();majMaintenant(!mainten
 $("heure").addEventListener("input",function(){if(maintenant&&$("heure").value){majMaintenant(false);}});
 $("heure").addEventListener("focus",function(){if(maintenant){majMaintenant(false);}});
 majMaintenant(true); /* « Maintenant » coché d'office : on gagne un geste en roulant */
+
+/* Aujourd'hui / Demain : pour demain, l'heure est obligatoire (pas de « Maintenant ») */
+var demain=false;
+function majJour(d){
+  demain=d;
+  $("auj").classList.toggle("actif",!d);
+  $("dem").classList.toggle("actif",d);
+  $("maintenant").style.display=d?"none":"";
+  if(d){majMaintenant(false);$("heure").placeholder="Ex : 08h30";$("heure").focus();}
+  else{majMaintenant(true);}
+}
+$("auj").addEventListener("click",function(){tap();majJour(false);});
+$("dem").addEventListener("click",function(){tap();majJour(true);});
 
 /* Adresses : suggestions (facultatives, on peut toujours écrire librement) */
 function suggestions(idInput,idListe){
@@ -548,8 +566,9 @@ function resoudre(v){
 
 /* Envoi */
 function envoyer(){
-  var d={heure:maintenant?"maintenant":$("heure").value.trim(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
+  var d={demain:demain,heure:maintenant?"maintenant":$("heure").value.trim(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
   d.depart=resoudre(d.depart)||d.depart;d.arrivee=resoudre(d.arrivee)||d.arrivee;
+  if(demain&&!$("heure").value.trim()){$("msg").textContent="Choisis l'heure de demain.";return;}
   if(!d.heure||!d.depart||!d.arrivee){$("msg").textContent="Remplis l'heure, le départ et l'arrivée.";return;}
   $("ok").disabled=true;$("ok").textContent="Envoi…";$("msg").textContent="";
   d.initData=tg.initData;
@@ -601,7 +620,13 @@ def creer_course_depuis_formulaire(corps):
     commentaire = nettoyer_champ(str(corps.get("commentaire", "")))
     if not (heure and depart and arrivee):
         return 400, {"ok": False, "erreur": "Remplis l'heure, le départ et l'arrivée."}
-    w = {"uid": user["id"], "nom": nom_affiche(user), "heure": normaliser_heure(heure),
+    demain = bool(corps.get("demain"))
+    if demain and heure.lower() == "maintenant":
+        return 400, {"ok": False, "erreur": "Choisis l'heure de demain."}
+    heure = normaliser_heure(heure)
+    if demain:
+        heure = f"demain {heure}"
+    w = {"uid": user["id"], "nom": nom_affiche(user), "heure": heure, "demain": demain,
          "depart": depart, "arrivee": arrivee, "commentaire": commentaire}
     with LOCK:
         publier_course(w)
@@ -783,7 +808,12 @@ def maintenance():
             del state["wizards"][cle]
             change = True
     for cid, c in list(state["courses"].items()):
-        if c["statut"] == "open":
+        if c["statut"] == "open" and c.get("demain"):
+            # Course de demain : aucun rappel, c'est le donneur qui gère. Clôture silencieuse après 36 h.
+            if now - c["cree_ts"] > 36 * 3600:
+                cloturer(c, "expiree")
+                change = True
+        elif c["statut"] == "open":
             if now - c["cree_ts"] > EXPIRATION_MINUTES * 60:
                 cloturer(c, "expiree")
                 envoyer(
