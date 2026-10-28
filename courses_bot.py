@@ -67,7 +67,7 @@ QUESTIONS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("courses_bot")
 
-state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}}
+state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None}
 
 
 # --------------------------------------------------------------------------- état
@@ -131,14 +131,20 @@ def repondre_callback(cb_id, texte=None, alerte=False):
     api("answerCallbackQuery", **params)
 
 
+def poster_bouton():
+    """Poste le bouton qui ouvre le formulaire, en supprimant l'ancien pour qu'il soit toujours en bas."""
+    supprimer(state.get("bouton_id"))
+    state["bouton_id"] = envoyer(
+        "🚖 Pour donner une course, appuie sur le bouton ci-dessous.",
+        reply_markup={"inline_keyboard": [[{"text": BOUTON_DONNER, "url": APP_LINK}]]},
+    )
+
+
 def envoyer_clavier():
     if APP_LINK:
         # retire l'ancien clavier du bas, puis poste le bouton qui ouvre le formulaire
         supprimer(envoyer("🚖", reply_markup={"remove_keyboard": True}))
-        envoyer(
-            "🚖 Pour donner une course, appuie sur le bouton ci-dessous.",
-            reply_markup={"inline_keyboard": [[{"text": BOUTON_DONNER, "url": APP_LINK}]]},
-        )
+        poster_bouton()
         return
     envoyer(
         "🚖 Le bouton <b>Donner une course</b> est actif en bas de l'écran.",
@@ -270,6 +276,8 @@ def publier_course(w):
         return
     c["message_id"] = mid
     state["courses"][cid] = c
+    if APP_LINK:
+        poster_bouton()
 
 
 # --------------------------------------------------------------------------- saisie guidée
