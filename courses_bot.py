@@ -4,8 +4,10 @@
 Bot Telegram de gestion de courses entre chauffeurs.
 
 Fonctionnement :
-  - Un bouton permanent « 🚖 Donner une course » s'affiche en bas du groupe (commande /clavier).
-  - Le bot pose les questions une par une : heure, départ, arrivée, commentaire (facultatif).
+  - Un bouton fixe « 🚖 Donner une course » reste en bas du groupe (commande /clavier).
+  - Appui : le bot affiche 60 s un bouton « Ouvrir le formulaire » (mini-application : heure avec bouton
+    Maintenant, départ, arrivée avec suggestions d'adresses, commentaire). Sans COURSES_APP_LINK, il pose
+    les questions une par une dans le groupe.
   - Il poste une carte dans le groupe avec ✅ Accepter / ❌ Refuser.
   - Le premier qui accepte prend la course (la carte devient « Prise par X »).
   - Chaque refus ajoute une ligne « X ne peut pas ».
@@ -67,9 +69,8 @@ QUESTIONS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("courses_bot")
 
-state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None}
-bouton_a_remonter = {"depuis": None}  # horodatage du dernier message qui a repoussé le bouton vers le haut
-BOUTON_DELAI_SECONDS = 4
+state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}}
+INVITATION_SECONDS = 60  # durée d'affichage du bouton « Ouvrir le formulaire »
 
 
 # --------------------------------------------------------------------------- état
@@ -119,10 +120,7 @@ def envoyer(texte, reply_markup=None, reply_to=None, silencieux=False):
         params["reply_to_message_id"] = reply_to
         params["allow_sending_without_reply"] = True
     d = api("sendMessage", **params)
-    mid = (d.get("result") or {}).get("message_id") if d.get("ok") else None
-    if mid and not silencieux:
-        signaler_message()
-    return mid
+    return (d.get("result") or {}).get("message_id") if d.get("ok") else None
 
 
 def supprimer(message_id):
@@ -138,30 +136,30 @@ def repondre_callback(cb_id, texte=None, alerte=False):
     api("answerCallbackQuery", **params)
 
 
-def signaler_message():
-    """Un message vient d'être posté dans le groupe : le bouton n'est plus tout en bas."""
-    if APP_LINK:
-        bouton_a_remonter["depuis"] = time.time()
-
-
-def poster_bouton():
-    """Poste le bouton qui ouvre le formulaire, en supprimant l'ancien pour qu'il soit toujours en bas."""
-    bouton_a_remonter["depuis"] = None
-    supprimer(state.get("bouton_id"))
-    state["bouton_id"] = envoyer(
-        "🚖 Pour donner une course, appuie sur le bouton ci-dessous.",
-        reply_markup={"inline_keyboard": [[{"text": BOUTON_DONNER, "url": APP_LINK}]]},
+def inviter_formulaire(user):
+    """Appui sur le bouton fixe du bas : affiche (60 s) le bouton qui ouvre le formulaire."""
+    uid = str(user["id"])
+    ancienne = state["invitations"].pop(uid, None)
+    if ancienne:
+        supprimer(ancienne["id"])
+    mid = envoyer(
+        f"👇 {echapper(nom_affiche(user))}, voici le formulaire.",
+        reply_markup={"inline_keyboard": [[{"text": "📝 Ouvrir le formulaire", "url": APP_LINK}]]},
         silencieux=True,
     )
-    bouton_a_remonter["depuis"] = None
+    if mid:
+        state["invitations"][uid] = {"id": mid, "ts": time.time()}
+
+
+def retirer_invitation(uid):
+    inv = state["invitations"].pop(str(uid), None)
+    if inv:
+        supprimer(inv["id"])
 
 
 def envoyer_clavier():
-    if APP_LINK:
-        # retire l'ancien clavier du bas, puis poste le bouton qui ouvre le formulaire
-        supprimer(envoyer("🚖", reply_markup={"remove_keyboard": True}))
-        poster_bouton()
-        return
+    supprimer(state.get("bouton_id"))  # ancien bouton « message » de la version précédente
+    state["bouton_id"] = None
     envoyer(
         "🚖 Le bouton <b>Donner une course</b> est actif en bas de l'écran.",
         reply_markup={
@@ -516,6 +514,7 @@ def creer_course_depuis_formulaire(corps):
          "depart": depart, "arrivee": arrivee, "commentaire": commentaire}
     with LOCK:
         publier_course(w)
+        retirer_invitation(user["id"])
         sauver_etat()
     return 200, {"ok": True}
 
@@ -572,8 +571,6 @@ def traiter_message(m):
             logger.warning(f"Message ignoré d'un autre groupe : id={chat.get('id')} ({chat.get('title')})")
         return
     user = m.get("from") or {}
-    if not user.get("is_bot"):
-        signaler_message()
     texte = (m.get("text") or "").strip()
     if user.get("is_bot") or not user.get("id") or not texte:
         return
@@ -583,7 +580,9 @@ def traiter_message(m):
         envoyer_clavier()
     elif texte == BOUTON_DONNER:
         supprimer(m["message_id"])
-        if not APP_LINK:
+        if APP_LINK:
+            inviter_formulaire(user)
+        else:
             demarrer_saisie(user)
     elif commande is None:
         w = state["wizards"].get(str(user["id"]))
@@ -676,10 +675,11 @@ def maintenance():
     """Saisies abandonnées, rappels, expiration, nettoyage. Retourne True si l'état a changé."""
     change = False
     now = time.time()
-    depuis = bouton_a_remonter["depuis"]
-    if APP_LINK and depuis and now - depuis >= BOUTON_DELAI_SECONDS:
-        poster_bouton()
-        change = True
+    for uid, inv in list(state["invitations"].items()):
+        if now - inv["ts"] > INVITATION_SECONDS:
+            supprimer(inv["id"])
+            del state["invitations"][uid]
+            change = True
     for cle, w in list(state["wizards"].items()):
         if now - w["debut"] > WIZARD_TIMEOUT_SECONDES:
             supprimer(w.get("prompt_id"))
