@@ -4,7 +4,7 @@
 Bot Telegram de gestion de courses entre chauffeurs.
 
 Fonctionnement :
-  - Un bouton fixe « 🚖 Donner une course » reste en bas du groupe (commande /clavier).
+  - Un message épinglé « Tu lâches une course ? » avec bouton « ➕ Donner une course » ouvre le formulaire (commande /clavier pour le poser).
   - Appui : le bot affiche 60 s un bouton « Ouvrir le formulaire » (mini-application : heure avec bouton
     Maintenant, départ, arrivée avec suggestions d'adresses, commentaire). Sans COURSES_APP_LINK, il pose
     les questions une par une dans le groupe.
@@ -158,16 +158,27 @@ def retirer_invitation(uid):
 
 
 def envoyer_clavier():
-    supprimer(state.get("bouton_id"))  # ancien bouton « message » de la version précédente
+    """/clavier ou /start : retire l'ancien bouton du bas et pose un message épinglé avec le bouton du formulaire."""
+    supprimer(state.get("bouton_id"))
     state["bouton_id"] = None
-    envoyer(
-        "🚖 Le bouton <b>Donner une course</b> est actif en bas de l'écran.",
-        reply_markup={
-            "keyboard": [[{"text": BOUTON_DONNER}]],
-            "resize_keyboard": True,
-            "is_persistent": True,
-        },
+    if not APP_LINK:
+        envoyer(
+            "🚖 Le bouton <b>Donner une course</b> est actif en bas de l'écran.",
+            reply_markup={"keyboard": [[{"text": BOUTON_DONNER}]], "resize_keyboard": True, "is_persistent": True},
+        )
+        return
+    # enlève le clavier fixe de l'ancienne version (message vide supprimé aussitôt)
+    rm = envoyer("·", reply_markup={"remove_keyboard": True}, silencieux=True)
+    supprimer(rm)
+    supprimer(state.get("epingle_id"))
+    mid = envoyer(
+        "Tu lâches une course ? Clique ici 👇",
+        reply_markup={"inline_keyboard": [[{"text": "➕ Donner une course", "url": APP_LINK}]]},
+        silencieux=True,
     )
+    if mid:
+        state["epingle_id"] = mid
+        api("pinChatMessage", chat_id=CHAT_ID, message_id=mid, disable_notification=True)
 
 
 # --------------------------------------------------------------------------- textes
