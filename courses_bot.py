@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot Telegram de gestion de courses entre chauffeurs.
+Bot Telegram de gestion de courses entre chauffeurs (v4).
 
 Fonctionnement :
   - Un bouton fixe « 🚖 Donner une course » reste en bas du groupe (commande /clavier).
