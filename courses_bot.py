@@ -889,6 +889,10 @@ def main():
     charger_etat()
     demarrer_serveur_web()
     logger.info("Bot de courses démarré.")
+    try:
+        envoyer_clavier()
+    except Exception:
+        logger.exception("Envoi du clavier au démarrage impossible")
     while True:
         try:
             d = api("getUpdates", _timeout=25, offset=state["offset"], timeout=10,
