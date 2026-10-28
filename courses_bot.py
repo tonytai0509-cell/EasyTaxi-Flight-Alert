@@ -412,9 +412,11 @@ input:focus{border-color:var(--btn)}
 input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .ligne{display:flex;gap:10px}
 .ligne input{flex:1;min-width:0}
+.micro{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:38px;height:38px;border:0;border-radius:19px;background:transparent;font-size:20px;padding:0}
+.micro.ecoute{background:rgba(229,72,77,.3)}
 .jour{display:flex;gap:8px;margin-top:8px}
 .jour button{flex:1;padding:9px;border:2px solid var(--line);border-radius:12px;background:transparent;color:var(--hint);font:600 15px "Poppins",-apple-system,Roboto,sans-serif}
-.jour button.actif{border-color:var(--btn);color:var(--btn)}
+.jour button.actif{border-color:var(--btn);background:var(--btn);color:var(--btnfg)}
 .maintenant{flex:0 0 auto;padding:0 18px;border:2px solid var(--btn);border-radius:14px;background:transparent;color:var(--btn);font:600 16px "Poppins",-apple-system,Roboto,sans-serif}
 .maintenant.actif{background:var(--btn);color:var(--btnfg)}
 .champ{position:relative}
@@ -563,6 +565,31 @@ function resoudre(v){
 ["depart","arrivee"].forEach(function(id){
   $(id).addEventListener("blur",function(){var r=resoudre($(id).value);if(r)$(id).value=r;});
 });
+
+/* Dictée des adresses : bouton micro seulement si le navigateur sait écouter */
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+function micro(id){
+  if(!SR)return;
+  var inp=$(id),bt=document.createElement("button"),rec=null;
+  bt.type="button";bt.className="micro";bt.textContent="🎙";
+  inp.parentNode.appendChild(bt);inp.style.paddingRight="52px";
+  bt.addEventListener("click",function(){
+    tap();
+    if(rec){try{rec.stop();}catch(e){}return;}
+    try{
+      rec=new SR();rec.lang="fr-FR";rec.interimResults=false;rec.maxAlternatives=1;
+      bt.classList.add("ecoute");
+      rec.onresult=function(e){
+        var t=((e.results[0]||[])[0]||{}).transcript||"";t=t.trim();
+        if(t){inp.value=t.charAt(0).toUpperCase()+t.slice(1);var r=resoudre(inp.value);if(r)inp.value=r;}
+      };
+      rec.onerror=function(){$("msg").textContent="Micro indisponible ici : utilise le micro du clavier.";};
+      rec.onend=function(){rec=null;bt.classList.remove("ecoute");};
+      rec.start();
+    }catch(x){rec=null;bt.classList.remove("ecoute");$("msg").textContent="Micro indisponible ici : utilise le micro du clavier.";}
+  });
+}
+micro("depart");micro("arrivee");
 
 /* Envoi */
 function envoyer(){
