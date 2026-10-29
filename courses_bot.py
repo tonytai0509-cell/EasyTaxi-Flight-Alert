@@ -244,8 +244,10 @@ def aide_position(user):
     if ancien:
         supprimer(ancien["id"])
     if position_active(uid):
-        texte = f"✅ {echapper(nom_affiche(user))}, ta position est visible."
+        texte = f"✅ {echapper(nom_affiche(user))} · position visible"
+        duree = 10
     else:
+        duree = ASTUCE_SECONDS
         texte = (f"📍 {echapper(nom_affiche(user))} : ouvre le bot en privé, puis 📎 → Position → "
                  f"<b>Partager en direct</b> (8 h). Tu apparais sur la carte.")
     boutons = []
@@ -255,7 +257,7 @@ def aide_position(user):
         boutons.append({"text": "🗺️ Carte", "url": lien_carte()})
     mid = envoyer_astuce(texte, {"inline_keyboard": [boutons]} if boutons else None)
     if mid:
-        state["astuces"][uid] = {"id": mid, "ts": time.time()}
+        state["astuces"][uid] = {"id": mid, "ts": time.time() - (ASTUCE_SECONDS - duree)}
 
 
 def rappeler_position(user):
