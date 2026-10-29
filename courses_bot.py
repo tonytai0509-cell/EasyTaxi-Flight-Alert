@@ -57,6 +57,11 @@ TZ = ZoneInfo("Europe/Paris")
 API = f"https://api.telegram.org/bot{TOKEN}"
 BOUTON_DONNER = "🚖 Donner une course"
 BOUTON_LIBRE = "🟢 Je suis libre"
+BOUTON_POSITION = "📍 Me localiser"
+POS_ACTIVE_SECONDS = 600   # position « en ligne » si mise à jour il y a moins de 10 min
+POS_GARDE_SECONDS = 3600   # au-delà d'1 h sans mise à jour, on oublie la position
+ASTUCE_SECONDS = 25        # durée d'affichage des petits messages position
+RAPPEL_POSITION_SECONDS = 3 * 3600
 LIBRE_SECONDS = 30 * 60
 MAX_CHAMP = 120
 
@@ -71,7 +76,7 @@ QUESTIONS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("courses_bot")
 
-state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}, "libres": {}}
+state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}, "libres": {}, "positions": {}, "astuces": {}, "pos_rappel": {}}
 INVITATION_SECONDS = 60  # durée d'affichage du bouton « Ouvrir le formulaire »
 
 
@@ -163,6 +168,7 @@ def declarer_libre(user):
     mid = envoyer(f"🟢 <b>{echapper(nom_affiche(user))}</b> est libre", silencieux=True)
     if mid:
         state["libres"][uid] = {"id": mid, "ts": time.time()}
+    rappeler_position(user)
 
 
 def retirer_libre(uid):
@@ -177,6 +183,97 @@ def retirer_invitation(uid):
         supprimer(inv["id"])
 
 
+def lien_bot():
+    m = re.match(r"https?://t\.me/([^/?#]+)", APP_LINK or "")
+    return f"https://t.me/{m.group(1)}" if m else ""
+
+
+def lien_carte():
+    if not APP_LINK:
+        return ""
+    return APP_LINK + ("&" if "?" in APP_LINK else "?") + "startapp=carte"
+
+
+def position_active(uid):
+    p = state["positions"].get(str(uid))
+    return bool(p and time.time() - p["ts"] < POS_ACTIVE_SECONDS and time.time() < p["fin"] + 120)
+
+
+def enregistrer_position(user, m, edite):
+    loc = m.get("location") or {}
+    if "latitude" not in loc or "longitude" not in loc:
+        return
+    date = m.get("date") or time.time()
+    ts = m.get("edit_date") or date
+    live = loc.get("live_period")
+    fin = date + live if live else ts + 600
+    if fin < time.time():
+        return
+    state["positions"][str(user["id"])] = {
+        "nom": nom_affiche(user), "lat": loc["latitude"], "lon": loc["longitude"],
+        "ts": ts, "fin": fin,
+    }
+
+
+def membre_du_groupe(uid):
+    infos = (api("getChatMember", chat_id=CHAT_ID, user_id=uid).get("result")) or {}
+    return infos.get("status") in ("creator", "administrator", "member") or (
+        infos.get("status") == "restricted" and infos.get("is_member"))
+
+
+def liste_positions():
+    now = time.time()
+    res = []
+    for uid, p in state["positions"].items():
+        if now > p["fin"] + 120 or now - p["ts"] > POS_GARDE_SECONDS:
+            continue
+        res.append({"id": uid, "nom": p["nom"], "lat": p["lat"], "lon": p["lon"],
+                    "age": int(now - p["ts"]), "actif": now - p["ts"] < POS_ACTIVE_SECONDS})
+    res.sort(key=lambda r: r["age"])
+    return res
+
+
+def envoyer_astuce(texte, markup=None):
+    return envoyer(texte, reply_markup=markup, silencieux=True)
+
+
+def aide_position(user):
+    """Bouton « Me localiser » : explication courte + accès à la carte, effacée après quelques secondes."""
+    uid = str(user["id"])
+    ancien = state["astuces"].pop(uid, None)
+    if ancien:
+        supprimer(ancien["id"])
+    if position_active(uid):
+        texte = f"✅ {echapper(nom_affiche(user))}, ta position est visible."
+    else:
+        texte = (f"📍 {echapper(nom_affiche(user))} : ouvre le bot en privé, puis 📎 → Position → "
+                 f"<b>Partager en direct</b> (8 h). Tu apparais sur la carte.")
+    boutons = []
+    if lien_bot() and not position_active(uid):
+        boutons.append({"text": "💬 Ouvrir le bot", "url": lien_bot()})
+    if lien_carte():
+        boutons.append({"text": "🗺️ Carte", "url": lien_carte()})
+    mid = envoyer_astuce(texte, {"inline_keyboard": [boutons]} if boutons else None)
+    if mid:
+        state["astuces"][uid] = {"id": mid, "ts": time.time()}
+
+
+def rappeler_position(user):
+    """Après « Je suis libre » : un petit rappel, au plus une fois par 3 h, si la position n'est pas partagée."""
+    uid = str(user["id"])
+    if position_active(uid) or time.time() - state["pos_rappel"].get(uid, 0) < RAPPEL_POSITION_SECONDS:
+        return
+    state["pos_rappel"][uid] = time.time()
+    ancien = state["astuces"].pop(uid, None)
+    if ancien:
+        supprimer(ancien["id"])
+    boutons = [{"text": "📍 Comment ?", "callback_data": "posinfo:"}]
+    mid = envoyer_astuce(f"📍 {echapper(nom_affiche(user))}, partage ta position pour apparaître sur la carte.",
+                         {"inline_keyboard": [boutons]})
+    if mid:
+        state["astuces"][uid] = {"id": mid, "ts": time.time()}
+
+
 def envoyer_clavier():
     """/clavier ou /start : pose le clavier fixe (Donner une course | Je suis libre) en bas du groupe."""
     supprimer(state.get("bouton_id"))
@@ -184,7 +281,7 @@ def envoyer_clavier():
     envoyer(
         "Boutons actifs en bas de l'écran.",
         reply_markup={
-            "keyboard": [[{"text": BOUTON_DONNER}, {"text": BOUTON_LIBRE}]],
+            "keyboard": [[{"text": BOUTON_DONNER}, {"text": BOUTON_LIBRE}], [{"text": BOUTON_POSITION}]],
             "resize_keyboard": True,
             "is_persistent": True,
         },
@@ -457,6 +554,7 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 <script>
 var tg=(window.Telegram&&window.Telegram.WebApp)||{ready:function(){},expand:function(){},close:function(){},initData:""};
 try{tg.ready();tg.expand();}catch(e){}
+try{if((tg.initDataUnsafe||{}).start_param==="carte"){location.replace("/carte"+location.hash);}}catch(e){}
 var $=function(id){return document.getElementById(id)};
 function tap(){try{tg.HapticFeedback.impactOccurred("light");}catch(e){}}
 
@@ -654,6 +752,67 @@ armerIdle();
 </script></body></html>"""
 
 
+PAGE_CARTE = """<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Carte</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{--bg:var(--tg-theme-bg-color,#fff);--fg:var(--tg-theme-text-color,#111);--hint:var(--tg-theme-hint-color,#7d8590);--card:var(--tg-theme-secondary-bg-color,#f1f3f5);--btn:var(--tg-theme-button-color,#2481cc)}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.3 -apple-system,Roboto,"Segoe UI",sans-serif}
+#app{display:flex;flex-direction:column;height:100%}
+#map{flex:1;min-height:200px}
+#haut{padding:12px 16px;font-weight:600;font-size:17px;display:flex;justify-content:space-between;background:var(--card)}
+#haut span{color:var(--hint);font-weight:500;font-size:13px;align-self:center}
+#liste{max-height:30%;overflow:auto;background:var(--card);padding:6px 16px 12px}
+.l{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(127,127,127,.2)}
+.l small{color:var(--hint)}
+.pin{width:30px;height:30px;border-radius:50%;background:#2ea6ff;border:2px solid #fff;color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.5)}
+.pin.gris{background:#6b7a89}
+.pin.moi{background:#2fbf71}
+.lab{position:absolute;top:32px;left:50%;transform:translateX(-50%);background:rgba(14,22,33,.85);color:#fff;border-radius:10px;padding:1px 8px;font-size:12px;white-space:nowrap}
+#vide{position:absolute;z-index:999;top:90px;left:20px;right:20px;text-align:center;background:var(--card);border-radius:12px;padding:12px;color:var(--hint);display:none}
+</style></head><body>
+<div id="app"><div id="haut">Carte des collègues<span id="nb"></span></div>
+<div style="position:relative;flex:1;display:flex"><div id="map"></div><div id="vide">Personne ne partage sa position pour l'instant.</div></div>
+<div id="liste"></div></div>
+<script>
+var tg=(window.Telegram&&window.Telegram.WebApp)||{ready:function(){},expand:function(){},initData:""};
+try{tg.ready();tg.expand();}catch(e){}
+var map=L.map("map",{zoomControl:false}).setView([43.70,7.26],12);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
+var marqueurs={},premier=true;
+function age(s){return s<45?"à l'instant":s<3600?"il y a "+Math.max(1,Math.round(s/60))+" min":"il y a "+Math.round(s/3600)+" h";}
+function esc(t){var d=document.createElement("div");d.textContent=t;return d.innerHTML;}
+function rendre(j){
+  var ps=j.positions||[],vus={},liste=document.getElementById("liste");liste.innerHTML="";
+  ps.forEach(function(p,i){
+    var cle=p.id;vus[cle]=1;
+    var html='<div class="pin '+(p.actif?"":"gris")+'">'+esc(p.nom.charAt(0).toUpperCase())+'</div><div class="lab">'+esc(p.nom)+'</div>';
+    var m=marqueurs[cle];
+    if(m){m.setLatLng([p.lat,p.lon]);m.setIcon(L.divIcon({html:html,className:"",iconSize:[30,30],iconAnchor:[15,15]}));}
+    else{marqueurs[cle]=L.marker([p.lat,p.lon],{icon:L.divIcon({html:html,className:"",iconSize:[30,30],iconAnchor:[15,15]})}).addTo(map);}
+    var l=document.createElement("div");l.className="l";
+    l.innerHTML="<span>"+(p.actif?"🟢 ":"⚪ ")+esc(p.nom)+"</span><small>"+age(p.age)+"</small>";
+    l.onclick=function(){map.setView([p.lat,p.lon],15);};
+    liste.appendChild(l);
+  });
+  Object.keys(marqueurs).forEach(function(c){if(!vus[c]){map.removeLayer(marqueurs[c]);delete marqueurs[c];}});
+  document.getElementById("nb").textContent=ps.filter(function(p){return p.actif;}).length+" en ligne";
+  document.getElementById("vide").style.display=ps.length?"none":"block";
+  if(premier&&ps.length){premier=false;var b=L.latLngBounds(ps.map(function(p){return [p.lat,p.lon];}));map.fitBounds(b,{padding:[50,50],maxZoom:15});}
+}
+function charger(){
+  fetch("/api/positions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData})})
+   .then(function(r){return r.json();}).then(function(j){if(j.ok)rendre(j);else document.getElementById("vide").textContent="Ouvre la carte depuis le groupe.",document.getElementById("vide").style.display="block";})
+   .catch(function(){});
+}
+charger();setInterval(charger,10000);
+</script></body></html>"""
+
+
 def valider_init_data(init_data):
     """Vérifie la signature Telegram du formulaire et retourne l'utilisateur, ou None."""
     try:
@@ -720,12 +879,29 @@ class FormulaireHandler(BaseHTTPRequestHandler):
         self.wfile.write(octets)
 
     def do_GET(self):
-        if self.path.split("?")[0] in ("/", "/index.html"):
+        if self.path.split("?")[0] == "/carte":
+            self._repondre(200, PAGE_CARTE, "text/html; charset=utf-8")
+        elif self.path.split("?")[0] in ("/", "/index.html"):
             self._repondre(200, PAGE_FORMULAIRE, "text/html; charset=utf-8")
         else:
             self._repondre(200, "ok", "text/plain; charset=utf-8")
 
     def do_POST(self):
+        if self.path == "/api/positions":
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                corps = json.loads(self.rfile.read(n).decode("utf-8")) if 0 < n <= 10000 else {}
+                user = valider_init_data(str(corps.get("initData", "")))
+                if not user or not membre_du_groupe(user["id"]):
+                    self._repondre(403, json.dumps({"ok": False}))
+                    return
+                with LOCK:
+                    res = liste_positions()
+                self._repondre(200, json.dumps({"ok": True, "positions": res, "moi": user["id"]}, ensure_ascii=False))
+            except Exception:
+                logger.exception("Positions")
+                self._repondre(400, json.dumps({"ok": False}))
+            return
         if self.path != "/api/course":
             self._repondre(404, json.dumps({"ok": False}))
             return
@@ -751,8 +927,40 @@ def demarrer_serveur_web():
 
 # --------------------------------------------------------------------------- événements
 
+def traiter_position(m, edite=False):
+    """Position (en direct ou non) partagée dans le groupe ou en privé avec le bot."""
+    chat = m.get("chat", {})
+    user = m.get("from") or {}
+    if user.get("is_bot") or not user.get("id") or not m.get("location"):
+        return
+    if str(chat.get("id")) == str(CHAT_ID):
+        enregistrer_position(user, m, edite)
+    elif chat.get("type") == "private" and membre_du_groupe(user["id"]):
+        enregistrer_position(user, m, edite)
+        if not edite:
+            api("sendMessage", chat_id=chat["id"], text="✅ Position reçue. Tu apparais sur la carte du groupe.")
+
+
+def message_prive(m):
+    chat = m.get("chat", {})
+    texte = (m.get("text") or "").strip()
+    if texte.lower().startswith("/start"):
+        boutons = []
+        if lien_carte():
+            boutons.append({"text": "🗺️ Voir la carte", "url": lien_carte()})
+        api("sendMessage", chat_id=chat["id"], parse_mode="HTML",
+            text="📍 Pour apparaître sur la carte du groupe : 📎 → <b>Position</b> → <b>Partager ma position en direct</b> (8 h).",
+            **({"reply_markup": {"inline_keyboard": [boutons]}} if boutons else {}))
+
+
 def traiter_message(m):
     chat = m.get("chat", {})
+    if m.get("location"):
+        traiter_position(m)
+        return
+    if chat.get("type") == "private":
+        message_prive(m)
+        return
     if str(chat.get("id")) != str(CHAT_ID):
         if chat.get("type") in ("group", "supergroup"):
             logger.warning(f"Message ignoré d'un autre groupe : id={chat.get('id')} ({chat.get('title')})")
@@ -768,6 +976,9 @@ def traiter_message(m):
     elif texte == BOUTON_LIBRE:
         supprimer(m["message_id"])
         declarer_libre(user)
+    elif texte == BOUTON_POSITION:
+        supprimer(m["message_id"])
+        aide_position(user)
     elif texte == BOUTON_DONNER:
         supprimer(m["message_id"])
         if APP_LINK:
@@ -791,6 +1002,11 @@ def traiter_callback(cb):
         repondre_callback(cb_id)
         return
     action, _, ref = (cb.get("data") or "").partition(":")
+
+    if action == "posinfo":
+        repondre_callback(cb_id, "Ouvre le bot en privé, puis 📎 → Position → Partager en direct (8 h). "
+                                 "Tu peux aussi le faire dans le groupe.", alerte=True)
+        return
 
     if action in ("wcancel", "wskip"):
         w = state["wizards"].get(str(uid))
@@ -854,6 +1070,10 @@ def traiter_update(u):
         traiter_callback(u["callback_query"])
     elif u.get("message"):
         traiter_message(u["message"])
+    elif u.get("edited_message"):
+        em = u["edited_message"]
+        if em.get("location"):
+            traiter_position(em, edite=True)
 
 
 # --------------------------------------------------------------------------- tâches de fond
@@ -866,6 +1086,15 @@ def maintenance():
         if now - inv["ts"] > INVITATION_SECONDS:
             supprimer(inv["id"])
             del state["invitations"][uid]
+            change = True
+    for uid, a in list(state["astuces"].items()):
+        if now - a["ts"] > ASTUCE_SECONDS:
+            supprimer(a["id"])
+            del state["astuces"][uid]
+            change = True
+    for uid, p in list(state["positions"].items()):
+        if now > p["fin"] + 120 or now - p["ts"] > POS_GARDE_SECONDS:
+            del state["positions"][uid]
             change = True
     for uid, l in list(state["libres"].items()):
         if now - l["ts"] > LIBRE_SECONDS:
@@ -914,7 +1143,7 @@ def main():
     while True:
         try:
             d = api("getUpdates", _timeout=25, offset=state["offset"], timeout=10,
-                    allowed_updates=["message", "callback_query"])
+                    allowed_updates=["message", "edited_message", "callback_query"])
             if not d.get("ok"):
                 time.sleep(3)
                 continue
