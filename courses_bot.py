@@ -168,7 +168,6 @@ def declarer_libre(user):
     mid = envoyer(f"🟢 <b>{echapper(nom_affiche(user))}</b> est libre", silencieux=True)
     if mid:
         state["libres"][uid] = {"id": mid, "ts": time.time()}
-    rappeler_position(user)
 
 
 def retirer_libre(uid):
@@ -283,7 +282,7 @@ def envoyer_clavier():
     envoyer(
         "Boutons actifs en bas de l'écran.",
         reply_markup={
-            "keyboard": [[{"text": BOUTON_DONNER}, {"text": BOUTON_LIBRE}], [{"text": BOUTON_POSITION}]],
+            "keyboard": [[{"text": BOUTON_DONNER}, {"text": BOUTON_LIBRE}]],
             "resize_keyboard": True,
             "is_persistent": True,
         },
@@ -978,9 +977,6 @@ def traiter_message(m):
     elif texte == BOUTON_LIBRE:
         supprimer(m["message_id"])
         declarer_libre(user)
-    elif texte == BOUTON_POSITION:
-        supprimer(m["message_id"])
-        aide_position(user)
     elif texte == BOUTON_DONNER:
         supprimer(m["message_id"])
         if APP_LINK:
