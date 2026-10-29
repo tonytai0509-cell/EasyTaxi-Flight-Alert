@@ -519,8 +519,19 @@ function suggestions(idInput,idListe){
     if(!principal)return null;
     return {texte:principal+(lieu&&lieu!==principal?", "+lieu:""),principal:principal,lieu:(lieu&&lieu!==principal)?lieu:""};
   }
+  function locaux(q){
+    var n=sansAccents(q),res=[];
+    if(n.length<2)return res;
+    ETAB.forEach(function(e){
+      var ok=e[1].some(function(a){return a===n||(n.length>=2&&a.indexOf(n)===0);})
+        ||(n.length>=3&&sansAccents(e[0]).indexOf(n)>=0);
+      if(ok){var p=e[0].split(", ");res.push({texte:e[0],principal:p[0],lieu:p.slice(1).join(", ")});}
+    });
+    return res.slice(0,3);
+  }
   function afficher(features){
     var vus={},items=[];
+    locaux(inp.value).forEach(function(l){vus[l.texte]=1;items.push(l);});
     (features||[]).forEach(function(f){
       var l=libelle(f);
       if(l&&!vus[l.texte]){vus[l.texte]=1;items.push(l);}
@@ -547,7 +558,9 @@ function suggestions(idInput,idListe){
   inp.addEventListener("input",function(){
     clearTimeout(minuteur);
     var q=inp.value.trim();
-    if(q.length<3){cacher();return;}
+    if(q.length<2){cacher();return;}
+    afficher([]);
+    if(q.length<3)return;
     minuteur=setTimeout(function(){chercher(q);},260);
   });
   inp.addEventListener("blur",function(){setTimeout(cacher,150);});
