@@ -768,6 +768,13 @@ var idleT=null;
 function armerIdle(){clearTimeout(idleT);idleT=setTimeout(function(){tg.close();},120000);}
 ["touchstart","click","input","keydown","scroll"].forEach(function(e){document.addEventListener(e,armerIdle,{passive:true});});
 armerIdle();
+/* Formulaire laissé en arrière-plan (barre « Dispatch » réduite) : fermé au bout de 45 s,
+   pour que « Ouvrir le formulaire » l'ouvre du premier coup la fois suivante. */
+var cacheT=null;
+document.addEventListener("visibilitychange",function(){
+  clearTimeout(cacheT);
+  if(document.hidden){cacheT=setTimeout(function(){tg.close();},45000);}
+});
 </script></body></html>"""
 
 
