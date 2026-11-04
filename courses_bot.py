@@ -350,7 +350,9 @@ def texte_course(c):
         lignes.append("❌ " + ", ".join(echapper(n.split()[0]) for n in c["refus"].values() if n.strip()))
     statut = c["statut"]
     if statut == "prise":
-        lignes.append(f"✅ <b>Prise par {echapper(c['pris_par_nom'])}</b>")
+        # Le nom est un lien vers le profil du chauffeur (pour lui écrire).
+        nom = mention(c["pris_par_id"], c["pris_par_nom"]) if c.get("pris_par_id") else echapper(c["pris_par_nom"])
+        lignes.append(f"✅ <b>Prise par {nom}</b>")
     elif statut == "trouvee":
         lignes.append("🤝 <b>Trouvée en dehors du groupe</b>")
     elif statut == "annulee":
@@ -360,9 +362,19 @@ def texte_course(c):
     return "\n".join(lignes)
 
 
-def clavier_course(c):
+def bouton_ecrire(c):
+    """« 💬 Écrire à X » sous une course prise : ouvre la conversation privée avec le chauffeur."""
+    if c["statut"] != "prise" or not c.get("pris_par_id"):
+        return None
+    prenom = (c.get("pris_par_nom") or "au chauffeur").split()[0]
+    url = f"https://t.me/{c['pris_par_username']}" if c.get("pris_par_username") else f"tg://user?id={c['pris_par_id']}"
+    return {"text": f"💬 Écrire à {prenom}", "url": url}
+
+
+def clavier_course(c, avec_ecrire=True):
     if c["statut"] != "open":
-        return {"inline_keyboard": []}
+        b = bouton_ecrire(c) if avec_ecrire else None
+        return {"inline_keyboard": [[b]] if b else []}
     cid = c["id"]
     return {"inline_keyboard": [
         [{"text": "✅ Accepter", "callback_data": f"acc:{cid}"},
@@ -378,6 +390,12 @@ def maj_carte(c):
     d = api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
             text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c),
             link_preview_options={"is_disabled": True})
+    if not d.get("ok") and "not modified" not in str(d.get("description", "")) and bouton_ecrire(c):
+        # Profil privé sans nom d'utilisateur : Telegram refuse le bouton.
+        # On garde la carte sans bouton (le nom reste cliquable dans le texte).
+        d = api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
+                text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c, avec_ecrire=False),
+                link_preview_options={"is_disabled": True})
     if not d.get("ok") and COPIER_LABEL != "Copier" and "not modified" not in str(d.get("description", "")):
         COPIER_LABEL = "Copier"
         api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
@@ -1040,6 +1058,7 @@ def traiter_callback(cb):
             return
         c["refus"].pop(str(uid), None)
         c["pris_par_id"], c["pris_par_nom"] = uid, nom
+        c["pris_par_username"] = user.get("username")
         cloturer(c, "prise")
         retirer_libre(uid)
         repondre_callback(cb_id, "Course acceptée ✅")
