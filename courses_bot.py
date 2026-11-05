@@ -276,10 +276,11 @@ def rappeler_position(user):
 
 
 def envoyer_clavier():
-    """/clavier ou /start : pose le clavier fixe (Donner une course | Je suis libre) en bas du groupe."""
-    supprimer(state.get("bouton_id"))
-    state["bouton_id"] = None
-    envoyer(
+    """/clavier, démarrage et chaque matin : pose le clavier fixe (Donner une course | Je suis libre).
+    Le nouveau message est envoyé AVANT d'effacer l'ancien : effacer d'abord faisait
+    parfois disparaître les boutons chez les chauffeurs."""
+    ancien = state.get("bouton_id")
+    mid = envoyer(
         "Boutons actifs en bas de l'écran.",
         reply_markup={
             "keyboard": [[{"text": BOUTON_DONNER}, {"text": BOUTON_LIBRE}]],
@@ -288,6 +289,11 @@ def envoyer_clavier():
         },
         silencieux=True,
     )
+    if mid:
+        state["bouton_id"] = mid
+        state["clavier_jour"] = datetime.now(TZ).strftime("%Y-%m-%d")
+        if ancien and ancien != mid:
+            supprimer(ancien)
 
 
 # --------------------------------------------------------------------------- textes
@@ -1106,6 +1112,11 @@ def maintenance():
     """Saisies abandonnées, rappels, expiration, nettoyage. Retourne True si l'état a changé."""
     change = False
     now = time.time()
+    # Chaque matin (6 h), les boutons du bas sont reposés pour tout le monde.
+    maintenant = datetime.now(TZ)
+    if maintenant.hour >= 6 and state.get("clavier_jour") != maintenant.strftime("%Y-%m-%d"):
+        envoyer_clavier()
+        change = True
     for uid, inv in list(state["invitations"].items()):
         if now - inv["ts"] > INVITATION_SECONDS:
             supprimer(inv["id"])
