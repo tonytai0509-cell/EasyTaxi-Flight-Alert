@@ -51,6 +51,25 @@ SEPARATEURS = re.compile(r"\s+(?:pour|vers|jusqu'a|jusqu'à)\s+|\s*(?:->|→|=>|
 SEPARATEURS_FAIBLES = re.compile(r"\s+(?:à|-|/)\s+", re.IGNORECASE)
 NICE = re.compile(r"\bnice\b", re.IGNORECASE)
 
+# Communes du coin, pour couper « prix nice carros » sans « pour ».
+VILLES = {
+    "nice", "carros", "cagnes", "cagnes sur mer", "saint laurent", "st laurent", "saint laurent du var", "st laurent du var",
+    "slv", "antibes", "juan les pins", "cannes", "le cannet", "mougins", "mandelieu", "grasse", "menton", "monaco",
+    "vence", "la gaude", "villeneuve loubet", "saint jeannet", "st jeannet", "gattieres", "colomars", "le broc", "levens",
+    "cap d'ail", "beausoleil", "eze", "villefranche", "villefranche sur mer", "beaulieu", "valbonne", "sophia", "sophia antipolis",
+    "biot", "vallauris", "mouans sartoux", "la trinite", "drap", "contes", "aspremont", "falicon", "tourrette levens",
+    "saint andre de la roche", "saint martin du var", "la colle sur loup", "saint paul de vence", "st paul de vence",
+    "frejus", "saint raphael", "st raphael", "draguignan", "aeroport", "gare",
+}
+# Petits mots autour des options : « en hdj », « de nuit », « la nuit ».
+LIAISONS = {"en", "de", "la", "le", "du", "un", "une", "et", "avec", "en hdj"}
+
+
+def est_lieu_connu(texte):
+    cle = re.sub(r"[-']", " ", sans_accents(texte)).strip()
+    cle = re.sub(r"\s+", " ", cle)
+    return cle in VILLES or bool(raccourci(texte))
+
 
 def sans_accents(t):
     return "".join(c for c in unicodedata.normalize("NFD", t) if unicodedata.category(c) != "Mn").lower()
@@ -70,8 +89,13 @@ def analyser(texte):
         cle = OPTIONS.get(sans_accents(mot).strip(".,;"))
         if cle:
             opts[cle] = True
+            # « en hdj », « de nuit » : le petit mot juste avant part avec l'option.
+            if mots and sans_accents(mots[-1]) in LIAISONS:
+                mots.pop()
         else:
             mots.append(mot)
+    while mots and sans_accents(mots[-1]) in LIAISONS:
+        mots.pop()
     t = " ".join(mots)
     km = None
     m = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:kms?|kilom[eè]tres?)\b", t, re.IGNORECASE)
@@ -84,11 +108,18 @@ def analyser(texte):
     if len(parties) == 1:
         # Sans « pour » : on coupe là où un côté est un raccourci (« prix cagnes archet », « prix stg 12 rue x »).
         mots_t = parties[0].split()
+        meilleur, score_max = None, 0
         for i in range(1, len(mots_t)):
             g, d = " ".join(mots_t[:i]), " ".join(mots_t[i:])
-            if raccourci(g) or raccourci(d):
-                parties = [g, d]
-                break
+            kg, kd = est_lieu_connu(g), est_lieu_connu(d)
+            # Les deux côtés connus d'abord, sinon le côté connu le plus long (« cagnes sur mer » plutôt que « cagnes »).
+            # Un établissement connu (stg, archet…) compte plus qu'un nom de ville, qui termine souvent une adresse.
+            poids = lambda t, connu: (len(t) * (10 if raccourci(t) else 1)) if connu else 0
+            score = (1000 if kg and kd else 0) + poids(g, kg) + poids(d, kd)
+            if score > score_max:
+                meilleur, score_max = [g, d], score
+        if meilleur:
+            parties = meilleur
     if km is not None:
         # « prix 25 km nice hdj » : pas besoin d'adresses ; « nice » suffit pour le forfait.
         return {"km": km, "depart": t or "", "arrivee": "", **opts}
