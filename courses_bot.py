@@ -41,6 +41,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+import prix
+
 TOKEN = os.getenv("COURSES_TOKEN")
 CHAT_ID = os.getenv("COURSES_CHAT_ID")
 DATA_DIR = os.getenv("DATA_DIR", ".")
@@ -973,9 +975,28 @@ def traiter_position(m, edite=False):
             api("sendMessage", chat_id=chat["id"], text="✅ Position reçue. Tu apparais sur la carte du groupe.")
 
 
+def repondre_prix(chat_id, message_id, texte):
+    """« prix A pour B hdj » : estimation du prix, calculée à part pour ne pas bloquer le bot."""
+    def travail():
+        try:
+            demande = prix.analyser(texte)
+            res = demande if isinstance(demande, str) else prix.calculer(demande)
+            corps = res if isinstance(res, str) else prix.texte_resultat(res, echapper)
+        except Exception:
+            logger.exception("Calcul de prix")
+            corps = "Calcul impossible pour le moment, réessaie dans un instant."
+        api("sendMessage", chat_id=chat_id, text=corps, parse_mode="HTML",
+            reply_to_message_id=message_id, allow_sending_without_reply=True,
+            link_preview_options={"is_disabled": True})
+    threading.Thread(target=travail, daemon=True).start()
+
+
 def message_prive(m):
     chat = m.get("chat", {})
     texte = (m.get("text") or "").strip()
+    if prix.est_demande(texte) and membre_du_groupe((m.get("from") or {}).get("id")):
+        repondre_prix(chat["id"], m["message_id"], texte)
+        return
     if texte.lower().startswith("/start"):
         boutons = []
         if lien_carte():
@@ -1000,6 +1021,9 @@ def traiter_message(m):
     user = m.get("from") or {}
     texte = (m.get("text") or "").strip()
     if user.get("is_bot") or not user.get("id") or not texte:
+        return
+    if prix.est_demande(texte):
+        repondre_prix(CHAT_ID, m["message_id"], texte)
         return
     commande = texte.split()[0].split("@")[0].lower() if texte.startswith("/") else None
     if commande in ("/clavier", "/start"):
