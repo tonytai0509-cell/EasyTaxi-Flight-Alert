@@ -45,7 +45,9 @@ OPTIONS = {
     "nuit": "nuit", "dimanche": "nuit", "ferie": "nuit", "férié": "nuit", "weekend": "nuit", "we": "nuit",
     "ar": "ar", "a/r": "ar", "aller-retour": "ar", "allerretour": "ar",
 }
-SEPARATEURS = re.compile(r"\s+(?:pour|vers|jusqu'a|jusqu'à|->|→|=>|-)\s+|\s*(?:->|→|=>)\s*", re.IGNORECASE)
+# D'abord les séparateurs sûrs (« pour », « > »…), puis « à », « - » ou « / » s'il n'y en a pas.
+SEPARATEURS = re.compile(r"\s+(?:pour|vers|jusqu'a|jusqu'à)\s+|\s*(?:->|→|=>|>|➡️|➡)\s*", re.IGNORECASE)
+SEPARATEURS_FAIBLES = re.compile(r"\s+(?:à|-|/)\s+", re.IGNORECASE)
 NICE = re.compile(r"\bnice\b", re.IGNORECASE)
 
 
@@ -77,6 +79,8 @@ def analyser(texte):
         t = (t[:m.start()] + t[m.end():]).strip()
     parties = [p.strip(" ,") for p in SEPARATEURS.split(t) if p and p.strip(" ,")]
     if len(parties) == 1:
+        parties = [p.strip(" ,") for p in SEPARATEURS_FAIBLES.split(t) if p and p.strip(" ,")] or parties
+    if len(parties) == 1:
         # Sans « pour » : on coupe là où un côté est un raccourci (« prix cagnes archet », « prix stg 12 rue x »).
         mots_t = parties[0].split()
         for i in range(1, len(mots_t)):
@@ -88,7 +92,7 @@ def analyser(texte):
         # « prix 25 km nice hdj » : pas besoin d'adresses ; « nice » suffit pour le forfait.
         return {"km": km, "depart": t or "", "arrivee": "", **opts}
     if len(parties) != 2:
-        return ("Je n'ai pas compris le trajet. Écris par exemple :\n"
+        return ("Je n'ai pas trouvé le départ et l'arrivée. Sépare-les par « pour » ou « > », par exemple :\n"
                 "<code>prix Hôpital Pasteur pour 248 bd de Provence Saint-Laurent hdj</code>\n"
                 "ou <code>prix 25 km nice nuit</code>")
     return {"km": None, "depart": parties[0], "arrivee": parties[1], **opts}
