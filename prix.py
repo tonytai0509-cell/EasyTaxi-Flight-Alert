@@ -168,9 +168,11 @@ def calculer(demande, session=requests):
     """Demande analysée -> dict prêt à afficher, ou message d'erreur (str)."""
     if demande["km"] is not None:
         km, duree = demande["km"], None
-        dep, arr = f"Trajet de {km:g} km".replace(".", ",") + (" · Nice" if NICE.search(demande["depart"]) else ""), ""
-        nice = bool(NICE.search(demande["depart"]))
-        tout_nice = nice
+        lieux = demande["depart"].strip()
+        dep, arr = f"Trajet de {km:g} km".replace(".", ",") + (f" · {lieux}" if lieux else ""), ""
+        nice = bool(NICE.search(lieux))
+        # « 75 km nice frejus » : Nice + une autre ville ; seul « nice » = trajet entièrement dans Nice.
+        tout_nice = sans_accents(lieux) == "nice"
     else:
         try:
             a = localiser(demande["depart"], session)
