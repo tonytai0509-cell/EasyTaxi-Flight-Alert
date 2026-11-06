@@ -32,6 +32,8 @@ ETABLISSEMENTS = [
     ("Clinique du Parc Impérial", "parc imperial cpi", "28 boulevard du Tzarewitch, 06000 Nice"),
     ("Clinique Saint-Antoine", "saint antoine st antoine sta", "7 avenue Durante, 06000 Nice"),
     ("Clinique Saint-François", "saint francois st francois stf", "10 boulevard Pasteur, 06000 Nice"),
+    # Monaco n'est pas dans la base d'adresses française : position donnée directement (lon, lat).
+    ("Centre Hospitalier Princesse Grace (CHPG)", "chpg princesse grace chpg monaco", "1 avenue Pasteur, 98000 Monaco", (7.4141, 43.7365)),
     ("Centre de Haute Énergie (CHE)", "che haute energie centre haute energie", "10 boulevard Pasteur, 06000 Nice"),
     ("Polyclinique Santa Maria", "santa maria psm", "57 avenue de la Californie, 06200 Nice"),
     ("Polyclinique Saint-Jean", "saint jean st jean stj", "92 avenue du Docteur Maurice Donat, 06800 Cagnes-sur-Mer"),
@@ -76,6 +78,12 @@ NOMS_VILLES = {
     "le cannet": "Le Cannet", "la trinite": "La Trinité", "mouans sartoux": "Mouans-Sartoux", "tourrette levens": "Tourrette-Levens",
     "la colle sur loup": "La Colle-sur-Loup", "frejus": "Fréjus", "eze": "Èze", "gattieres": "Gattières",
 }
+
+
+# Hors de la base d'adresses française : centre-ville (lon, lat).
+ENTREE_MONACO = (7.4186, 43.7420)
+KM_DANS_MONACO = 1.5
+VILLES_HORS_FRANCE = {"monaco": (7.4246, 43.7384), "monte carlo": (7.4262, 43.7403)}
 
 
 def cle_lieu(texte):
@@ -153,18 +161,24 @@ def analyser(texte):
 
 def raccourci(texte):
     cle = re.sub(r"[^a-z0-9' ]", " ", sans_accents(texte)).split()
-    cle = " ".join(m for m in cle if m not in ("hopital", "clinique", "polyclinique", "centre", "institut", "de", "l", "la", "le", "nice"))
+    cle = " ".join(m for m in cle if m not in ("hopital", "clinique", "polyclinique", "centre", "institut", "de", "l", "la", "le", "nice", "monaco"))
     if not cle:
         return None
-    for nom, mots, adresse in ETABLISSEMENTS:
+    for nom, mots, adresse, *pos in ETABLISSEMENTS:
         if cle in sans_accents(mots).split() or f" {cle} " in f" {sans_accents(mots)} ":
-            return nom, adresse
+            return nom, adresse, (pos[0] if pos else None)
     return None
 
 
 def localiser(texte, session=requests):
     """Texte -> (libellé lisible, ville, lon, lat) ou None. Raccourcis d'abord, puis adresse IGN (06 / 83 en priorité)."""
     r = raccourci(texte)
+    if r and r[2]:
+        ville = r[1].split(",")[-1].strip().split(" ", 1)[-1]
+        return r[0], ville, r[2][0], r[2][1]
+    cle0 = cle_lieu(texte)
+    if cle0 in VILLES_HORS_FRANCE:
+        return (cle0.title(), cle0.title(), *VILLES_HORS_FRANCE[cle0])
     requete, nom = (r[1], r[0]) if r else (texte, None)
     params = {"limit": 5, "autocomplete": 0, "lat": 43.70, "lon": 7.25}
     cle = cle_lieu(texte)
@@ -250,7 +264,21 @@ def calculer(demande, session=requests):
         try:
             km, duree = itineraire(a[2:], b[2:], session)
         except Exception:
-            return "Le calcul d'itinéraire ne répond pas, réessaie dans un instant."
+            # Routes de Monaco absentes des données IGN : on s'arrête à l'entrée de Monaco
+            # (Beausoleil, bd du Général Leclerc) et on ajoute le bout de trajet dans Monaco.
+            pa, pb = a[2:], b[2:]
+            extra = 0.0
+            if a[1] == "Monaco":
+                pa, extra = ENTREE_MONACO, extra + KM_DANS_MONACO
+            if b[1] == "Monaco":
+                pb, extra = ENTREE_MONACO, extra + KM_DANS_MONACO
+            if not extra:
+                return "Le calcul d'itinéraire ne répond pas, réessaie dans un instant."
+            try:
+                km, duree = itineraire(pa, pb, session)
+                km, duree = km + extra, duree + round(extra * 3)
+            except Exception:
+                return "Le calcul d'itinéraire ne répond pas, réessaie dans un instant."
         dep, arr = a[0], b[0]
         n1, n2 = bool(NICE.search(a[1] or a[0])), bool(NICE.search(b[1] or b[0]))
         nice, tout_nice = n1 or n2, n1 and n2
