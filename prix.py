@@ -61,6 +61,27 @@ VILLES = {
     "saint andre de la roche", "saint martin du var", "la colle sur loup", "saint paul de vence", "st paul de vence",
     "frejus", "saint raphael", "st raphael", "draguignan", "aeroport", "gare",
 }
+# Noms courts -> nom officiel de la commune (pour ne pas tomber sur une « rue Saint-Laurent » à Lucéram).
+NOMS_VILLES = {
+    "st laurent": "Saint-Laurent-du-Var", "saint laurent": "Saint-Laurent-du-Var", "slv": "Saint-Laurent-du-Var",
+    "st laurent du var": "Saint-Laurent-du-Var", "saint laurent du var": "Saint-Laurent-du-Var",
+    "cagnes": "Cagnes-sur-Mer", "cagnes sur mer": "Cagnes-sur-Mer",
+    "st jeannet": "Saint-Jeannet", "saint jeannet": "Saint-Jeannet",
+    "st paul de vence": "Saint-Paul-de-Vence", "saint paul de vence": "Saint-Paul-de-Vence",
+    "st raphael": "Saint-Raphaël", "saint raphael": "Saint-Raphaël",
+    "st martin du var": "Saint-Martin-du-Var", "saint martin du var": "Saint-Martin-du-Var",
+    "saint andre de la roche": "Saint-André-de-la-Roche", "villefranche": "Villefranche-sur-Mer",
+    "villefranche sur mer": "Villefranche-sur-Mer", "villeneuve loubet": "Villeneuve-Loubet", "la gaude": "La Gaude",
+    "juan les pins": "Antibes", "sophia": "Valbonne", "sophia antipolis": "Valbonne", "cap d'ail": "Cap-d'Ail",
+    "le cannet": "Le Cannet", "la trinite": "La Trinité", "mouans sartoux": "Mouans-Sartoux", "tourrette levens": "Tourrette-Levens",
+    "la colle sur loup": "La Colle-sur-Loup", "frejus": "Fréjus", "eze": "Èze", "gattieres": "Gattières",
+}
+
+
+def cle_lieu(texte):
+    return re.sub(r"\s+", " ", re.sub(r"[-'.]", " ", sans_accents(texte))).strip()
+
+
 # Petits mots autour des options : « en hdj », « de nuit », « la nuit ».
 LIAISONS = {"en", "de", "la", "le", "du", "un", "une", "et", "avec", "en hdj"}
 
@@ -145,8 +166,20 @@ def localiser(texte, session=requests):
     """Texte -> (libellé lisible, ville, lon, lat) ou None. Raccourcis d'abord, puis adresse IGN (06 / 83 en priorité)."""
     r = raccourci(texte)
     requete, nom = (r[1], r[0]) if r else (texte, None)
-    rep = session.get("https://data.geopf.fr/geocodage/search",
-                      params={"q": requete, "limit": 5, "autocomplete": 0, "lat": 43.70, "lon": 7.25}, timeout=6)
+    params = {"limit": 5, "autocomplete": 0, "lat": 43.70, "lon": 7.25}
+    cle = cle_lieu(texte)
+    if not r and (cle in NOMS_VILLES or cle in VILLES):
+        # Une commune seule : on cherche la commune (centre-ville), pas une rue du même nom.
+        nom = NOMS_VILLES.get(cle) or texte.strip().title()
+        requete, params["type"] = nom, "municipality"
+    elif not r:
+        # « 248 bd de Provence st laurent » -> « … Saint-Laurent-du-Var ».
+        for court, officiel in sorted(NOMS_VILLES.items(), key=lambda x: -len(x[0])):
+            m = re.search(r"(^|\s)" + re.escape(court).replace(r"\ ", r"[\s\-]+") + r"\.?$", sans_accents(requete))
+            if m:
+                requete = requete[:m.start()].rstrip(" ,") + " " + officiel
+                break
+    rep = session.get("https://data.geopf.fr/geocodage/search", params={"q": requete, **params}, timeout=6)
     rep.raise_for_status()
     feats = rep.json().get("features") or []
     f = next((x for x in feats if str((x.get("properties") or {}).get("postcode", "")).startswith(("06", "83"))), None) or (feats[0] if feats else None)
