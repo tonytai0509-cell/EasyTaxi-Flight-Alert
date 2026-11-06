@@ -32,6 +32,7 @@ ETABLISSEMENTS = [
     ("Clinique du Parc Impérial", "parc imperial cpi", "28 boulevard du Tzarewitch, 06000 Nice"),
     ("Clinique Saint-Antoine", "saint antoine st antoine sta", "7 avenue Durante, 06000 Nice"),
     ("Clinique Saint-François", "saint francois st francois stf", "10 boulevard Pasteur, 06000 Nice"),
+    ("Centre de Haute Énergie (CHE)", "che haute energie centre haute energie", "10 boulevard Pasteur, 06000 Nice"),
     ("Polyclinique Santa Maria", "santa maria psm", "57 avenue de la Californie, 06200 Nice"),
     ("Polyclinique Saint-Jean", "saint jean st jean stj", "92 avenue du Docteur Maurice Donat, 06800 Cagnes-sur-Mer"),
     ("Institut Arnault Tzanck", "tzanck tz iat", "231 avenue du Docteur Maurice Donat, 06721 Saint-Laurent-du-Var"),
