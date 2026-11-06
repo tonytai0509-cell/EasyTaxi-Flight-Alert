@@ -74,7 +74,7 @@ def analyser(texte):
             mots.append(mot)
     t = " ".join(mots)
     km = None
-    m = re.search(r"(\d+(?:[.,]\d+)?)\s*km\b", t, re.IGNORECASE)
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:kms?|kilom[eè]tres?)\b", t, re.IGNORECASE)
     if m:
         km = float(m.group(1).replace(",", "."))
         t = (t[:m.start()] + t[m.end():]).strip()
