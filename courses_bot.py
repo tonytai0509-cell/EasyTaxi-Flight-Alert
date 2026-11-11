@@ -339,6 +339,13 @@ def epingler_formulaire():
     epingles = state.setdefault("epingles", {})
     if epingles.get(groupe()):
         return
+    # Après un redémarrage (état non conservé), on reprend le message déjà épinglé
+    # au lieu d'en reposter un nouveau.
+    epingle = ((api("getChat", chat_id=groupe()).get("result") or {}).get("pinned_message")) or {}
+    boutons_ep = ((epingle.get("reply_markup") or {}).get("inline_keyboard")) or []
+    if epingle.get("message_id") and any(b.get("url", "").startswith(APP_LINK) for r in boutons_ep for b in r):
+        epingles[groupe()] = epingle["message_id"]
+        return
     mid = envoyer("Nouvelle course : appuie sur le bouton.",
                   reply_markup={"inline_keyboard": [[{"text": "Donner une course ›", "url": lien_formulaire()}]]},
                   silencieux=True)
