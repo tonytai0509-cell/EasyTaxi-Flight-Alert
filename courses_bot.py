@@ -85,7 +85,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("courses_bot")
 
 state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}, "libres": {}, "positions": {}, "astuces": {}, "pos_rappel": {},
-         "boutons": {}, "claviers_jour": {}}
+         "boutons": {}, "claviers_jour": {}, "epingles": {}}
 INVITATION_SECONDS = 60  # durée d'affichage du bouton « Ouvrir le formulaire »
 
 
@@ -191,7 +191,7 @@ def inviter_formulaire(user):
     ancienne = state["invitations"].pop(uid, None)
     if ancienne:
         supprimer(ancienne["id"], ancienne.get("chat"))
-    lien = APP_LINK + (("&" if "?" in APP_LINK else "?") + "startapp=web" if est_web() else "")
+    lien = lien_formulaire()
     mid = envoyer(
         f"👇 {echapper(nom_affiche(user))}, voici le formulaire.",
         reply_markup={"inline_keyboard": [[{"text": "📝 Ouvrir le formulaire", "url": lien}]]},
@@ -326,6 +326,26 @@ def rappeler_position(user):
         state["astuces"][uid] = {"id": mid, "ts": time.time()}
 
 
+def lien_formulaire():
+    return APP_LINK + (("&" if "?" in APP_LINK else "?") + "startapp=web" if est_web() else "")
+
+
+def epingler_formulaire():
+    """Message épinglé avec le bouton du formulaire : dans la barre épinglée en haut du groupe,
+    un seul appui ouvre le formulaire. Posé une fois par groupe (refait si on le supprime)."""
+    if not APP_LINK:
+        return
+    epingles = state.setdefault("epingles", {})
+    if epingles.get(groupe()):
+        return
+    mid = envoyer("🚖 <b>Donner une course</b> : appuie sur le bouton.",
+                  reply_markup={"inline_keyboard": [[{"text": "🚖 Donner une course", "url": lien_formulaire()}]]},
+                  silencieux=True)
+    if mid:
+        epingles[groupe()] = mid
+        api("pinChatMessage", chat_id=groupe(), message_id=mid, disable_notification=True)
+
+
 def envoyer_clavier():
     """/clavier, démarrage et chaque matin : pose le clavier fixe (Donner une course | Je suis libre).
     Le nouveau message est envoyé AVANT d'effacer l'ancien : effacer d'abord faisait
@@ -350,6 +370,7 @@ def envoyer_clavier():
             state["bouton_id"], state["clavier_jour"] = mid, jour
         if ancien and ancien != mid:
             supprimer(ancien)
+        epingler_formulaire()
 
 
 # --------------------------------------------------------------------------- textes
@@ -1127,6 +1148,10 @@ def traiter_message_groupe(m):
     if commande in ("/clavier", "/start"):
         supprimer(m["message_id"])
         envoyer_clavier()
+    elif commande == "/epingle":
+        supprimer(m["message_id"])
+        state.setdefault("epingles", {}).pop(groupe(), None)
+        epingler_formulaire()
     elif texte == BOUTON_LIBRE:
         supprimer(m["message_id"])
         declarer_libre(user)
