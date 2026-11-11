@@ -32,6 +32,8 @@ import json
 import logging
 import os
 import re
+import contextlib
+import contextvars
 import threading
 import time
 import urllib.parse
@@ -45,6 +47,10 @@ import prix
 
 TOKEN = os.getenv("COURSES_TOKEN")
 CHAT_ID = os.getenv("COURSES_CHAT_ID")
+# Deuxième groupe (Easy Web Group, courses du site) : mêmes fonctions, plus le transfert
+# manuel d'une course vers le groupe principal (EasyTaxi Group).
+WEB_CHAT_ID = os.getenv("COURSES_WEB_CHAT_ID", "-1003978779077").strip()
+NOM_GROUPE = os.getenv("COURSES_NOM_GROUPE", "EasyTaxi Group")
 DATA_DIR = os.getenv("DATA_DIR", ".")
 STATE_FILE = os.getenv("COURSES_STATE_FILE", os.path.join(DATA_DIR, "courses_state.json"))
 RAPPEL_SECONDES = int(os.getenv("COURSES_RAPPEL_SECONDES", "300"))
@@ -78,7 +84,8 @@ QUESTIONS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("courses_bot")
 
-state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}, "libres": {}, "positions": {}, "astuces": {}, "pos_rappel": {}}
+state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}, "libres": {}, "positions": {}, "astuces": {}, "pos_rappel": {},
+         "boutons": {}, "claviers_jour": {}}
 INVITATION_SECONDS = 60  # durée d'affichage du bouton « Ouvrir le formulaire »
 
 
@@ -105,6 +112,38 @@ def sauver_etat():
         logger.error(f"Sauvegarde de l'état impossible : {e}")
 
 
+# --------------------------------------------------------------------------- groupes
+
+_GROUPE = contextvars.ContextVar("groupe", default=None)
+
+
+def groupe():
+    """Groupe en cours de traitement (celui du message, du bouton ou de la course)."""
+    return _GROUPE.get() or CHAT_ID
+
+
+def est_groupe(chat_id):
+    return str(chat_id) in {str(CHAT_ID), str(WEB_CHAT_ID)} - {"", "None"}
+
+
+def est_web(chat_id=None):
+    return bool(WEB_CHAT_ID) and str(chat_id or groupe()) == str(WEB_CHAT_ID)
+
+
+@contextlib.contextmanager
+def dans(chat_id):
+    jeton = _GROUPE.set(str(chat_id or CHAT_ID))
+    try:
+        yield
+    finally:
+        _GROUPE.reset(jeton)
+
+
+def cle_u(uid):
+    """Clé par personne et par groupe (on garde l'ancienne clé pour le groupe principal)."""
+    return f"{groupe()}|{uid}" if est_web() else str(uid)
+
+
 # --------------------------------------------------------------------------- Telegram
 
 def api(method, _timeout=30, **params):
@@ -120,7 +159,7 @@ def api(method, _timeout=30, **params):
 
 
 def envoyer(texte, reply_markup=None, reply_to=None, silencieux=False):
-    params = {"chat_id": CHAT_ID, "text": texte, "parse_mode": "HTML",
+    params = {"chat_id": groupe(), "text": texte, "parse_mode": "HTML",
               "link_preview_options": {"is_disabled": True}}
     if silencieux:
         params["disable_notification"] = True
@@ -133,9 +172,9 @@ def envoyer(texte, reply_markup=None, reply_to=None, silencieux=False):
     return (d.get("result") or {}).get("message_id") if d.get("ok") else None
 
 
-def supprimer(message_id):
+def supprimer(message_id, chat_id=None):
     if message_id:
-        api("deleteMessage", chat_id=CHAT_ID, message_id=message_id)
+        api("deleteMessage", chat_id=chat_id or groupe(), message_id=message_id)
 
 
 def repondre_callback(cb_id, texte=None, alerte=False):
@@ -148,40 +187,41 @@ def repondre_callback(cb_id, texte=None, alerte=False):
 
 def inviter_formulaire(user):
     """Appui sur le bouton fixe du bas : affiche (60 s) le bouton qui ouvre le formulaire."""
-    uid = str(user["id"])
+    uid = cle_u(user["id"])
     ancienne = state["invitations"].pop(uid, None)
     if ancienne:
-        supprimer(ancienne["id"])
+        supprimer(ancienne["id"], ancienne.get("chat"))
+    lien = APP_LINK + (("&" if "?" in APP_LINK else "?") + "startapp=web" if est_web() else "")
     mid = envoyer(
         f"👇 {echapper(nom_affiche(user))}, voici le formulaire.",
-        reply_markup={"inline_keyboard": [[{"text": "📝 Ouvrir le formulaire", "url": APP_LINK}]]},
+        reply_markup={"inline_keyboard": [[{"text": "📝 Ouvrir le formulaire", "url": lien}]]},
         silencieux=True,
     )
     if mid:
-        state["invitations"][uid] = {"id": mid, "ts": time.time()}
+        state["invitations"][uid] = {"id": mid, "ts": time.time(), "chat": groupe()}
 
 
 def declarer_libre(user):
     """Bouton « Je suis libre » : un petit message discret, remplacé si on rappuie, effacé après 30 min."""
-    uid = str(user["id"])
+    uid = cle_u(user["id"])
     ancien = state["libres"].pop(uid, None)
     if ancien:
-        supprimer(ancien["id"])
+        supprimer(ancien["id"], ancien.get("chat"))
     mid = envoyer(f"🟢 <b>{echapper(nom_affiche(user))}</b> est libre", silencieux=True)
     if mid:
-        state["libres"][uid] = {"id": mid, "ts": time.time()}
+        state["libres"][uid] = {"id": mid, "ts": time.time(), "chat": groupe()}
 
 
 def retirer_libre(uid):
-    ancien = state["libres"].pop(str(uid), None)
+    ancien = state["libres"].pop(cle_u(uid), None)
     if ancien:
-        supprimer(ancien["id"])
+        supprimer(ancien["id"], ancien.get("chat"))
 
 
 def retirer_invitation(uid):
-    inv = state["invitations"].pop(str(uid), None)
+    inv = state["invitations"].pop(cle_u(uid), None)
     if inv:
-        supprimer(inv["id"])
+        supprimer(inv["id"], inv.get("chat"))
 
 
 def lien_bot():
@@ -216,10 +256,19 @@ def enregistrer_position(user, m, edite):
     }
 
 
-def membre_du_groupe(uid):
-    infos = (api("getChatMember", chat_id=CHAT_ID, user_id=uid).get("result")) or {}
+def statut_membre(uid, chat_id):
+    return (api("getChatMember", chat_id=chat_id, user_id=uid).get("result")) or {}
+
+
+def membre_de(uid, chat_id):
+    infos = statut_membre(uid, chat_id)
     return infos.get("status") in ("creator", "administrator", "member") or (
         infos.get("status") == "restricted" and infos.get("is_member"))
+
+
+def membre_du_groupe(uid):
+    """Membre du groupe principal ou d'Easy Web."""
+    return membre_de(uid, CHAT_ID) or (bool(WEB_CHAT_ID) and membre_de(uid, WEB_CHAT_ID))
 
 
 def liste_positions():
@@ -281,7 +330,9 @@ def envoyer_clavier():
     """/clavier, démarrage et chaque matin : pose le clavier fixe (Donner une course | Je suis libre).
     Le nouveau message est envoyé AVANT d'effacer l'ancien : effacer d'abord faisait
     parfois disparaître les boutons chez les chauffeurs."""
-    ancien = state.get("bouton_id")
+    boutons = state.setdefault("boutons", {})
+    jours = state.setdefault("claviers_jour", {})
+    ancien = boutons.get(groupe()) if est_web() else state.get("bouton_id")
     mid = envoyer(
         "Boutons actifs en bas de l'écran.",
         reply_markup={
@@ -292,8 +343,11 @@ def envoyer_clavier():
         silencieux=True,
     )
     if mid:
-        state["bouton_id"] = mid
-        state["clavier_jour"] = datetime.now(TZ).strftime("%Y-%m-%d")
+        jour = datetime.now(TZ).strftime("%Y-%m-%d")
+        if est_web():
+            boutons[groupe()], jours[groupe()] = mid, jour
+        else:
+            state["bouton_id"], state["clavier_jour"] = mid, jour
         if ancien and ancien != mid:
             supprimer(ancien)
 
@@ -363,6 +417,22 @@ def texte_course(c):
         lignes.append(f"✅ <b>Prise par {nom}</b>")
     elif statut == "trouvee":
         lignes.append("🤝 <b>Trouvée en dehors du groupe</b>")
+    elif statut == "transferee":
+        lignes.append(f"↪️ <b>Envoyée sur {echapper(NOM_GROUPE)} par {echapper(c.get('transfere_par', ''))}</b>")
+        copie = state["courses"].get(c.get("transfert_vers") or "")
+        if not copie:
+            pass
+        elif copie["statut"] == "prise":
+            nom = mention(copie["pris_par_id"], copie["pris_par_nom"]) if copie.get("pris_par_id") else echapper(copie["pris_par_nom"])
+            lignes.append(f"✅ <b>Prise par {nom} · {echapper(NOM_GROUPE)}</b>")
+        elif copie["statut"] == "open":
+            lignes.append(f"⏳ En attente sur {echapper(NOM_GROUPE)}")
+        elif copie["statut"] == "trouvee":
+            lignes.append(f"🤝 Trouvée en dehors de {echapper(NOM_GROUPE)}")
+        elif copie["statut"] == "annulee":
+            lignes.append(f"🗑 Annulée sur {echapper(NOM_GROUPE)}")
+        elif copie["statut"] == "expiree":
+            lignes.append(f"⌛ Personne ne l'a prise sur {echapper(NOM_GROUPE)}")
     elif statut == "annulee":
         lignes.append("🗑 <b>Course annulée</b>")
     elif statut == "expiree":
@@ -380,6 +450,10 @@ def bouton_ecrire(c):
 
 
 def clavier_course(c, avec_ecrire=True):
+    if c["statut"] == "transferee":
+        copie = state["courses"].get(c.get("transfert_vers") or "")
+        b = bouton_ecrire(copie) if (avec_ecrire and copie) else None
+        return {"inline_keyboard": [[b]] if b else []}
     if c["statut"] != "open":
         b = bouton_ecrire(c) if avec_ecrire else None
         return {"inline_keyboard": [[b]] if b else []}
@@ -390,23 +464,33 @@ def clavier_course(c, avec_ecrire=True):
         [{"text": "🤝 Trouvé", "callback_data": f"found:{cid}"},
          {"text": "🗑 Annuler", "callback_data": f"cancel:{cid}"},
          {"text": COPIER_LABEL, "copy_text": {"text": texte_copie(c)}}],
-    ]}
+    ] + ([[{"text": f"↪️ Envoyer à {NOM_GROUPE}", "callback_data": f"tr:{cid}"}]] if est_web(c.get("chat")) else [])}
 
 
 def maj_carte(c):
+    with dans(c.get("chat")):
+        _maj_carte(c)
+    # Course transférée : la carte d'origine (Easy Web) suit ce qui se passe ici.
+    src = state["courses"].get(c.get("source") or "")
+    if src:
+        with dans(src.get("chat")):
+            _maj_carte(src)
+
+
+def _maj_carte(c):
     global COPIER_LABEL
-    d = api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
+    d = api("editMessageText", chat_id=groupe(), message_id=c["message_id"],
             text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c),
             link_preview_options={"is_disabled": True})
     if not d.get("ok") and "not modified" not in str(d.get("description", "")) and bouton_ecrire(c):
         # Profil privé sans nom d'utilisateur : Telegram refuse le bouton.
         # On garde la carte sans bouton (le nom reste cliquable dans le texte).
-        d = api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
+        d = api("editMessageText", chat_id=groupe(), message_id=c["message_id"],
                 text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c, avec_ecrire=False),
                 link_preview_options={"is_disabled": True})
     if not d.get("ok") and COPIER_LABEL != "Copier" and "not modified" not in str(d.get("description", "")):
         COPIER_LABEL = "Copier"
-        api("editMessageText", chat_id=CHAT_ID, message_id=c["message_id"],
+        api("editMessageText", chat_id=groupe(), message_id=c["message_id"],
             text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c),
             link_preview_options={"is_disabled": True})
 
@@ -415,7 +499,7 @@ def maj_carte(c):
 
 def cloturer(c, statut):
     c["statut"] = statut
-    supprimer(c.get("rappel_id"))
+    supprimer(c.get("rappel_id"), c.get("chat"))
     c["rappel_id"] = None
     maj_carte(c)
 
@@ -436,10 +520,17 @@ def envoyer_rappel(c):
 
 
 def publier_course(w):
+    with dans(w.get("chat")):
+        return _publier_course(w)
+
+
+def _publier_course(w):
     cid = str(state["next_id"])
     state["next_id"] += 1
     c = {
         "id": cid,
+        "chat": groupe(),
+        "source": w.get("source"),
         "donneur_id": w["uid"],
         "donneur_nom": w["nom"],
         "heure": w["heure"],
@@ -468,6 +559,7 @@ def publier_course(w):
         return
     c["message_id"] = mid
     state["courses"][cid] = c
+    return c
 
 
 # --------------------------------------------------------------------------- saisie guidée
@@ -488,7 +580,7 @@ def demarrer_saisie(user):
     ancien = state["wizards"].pop(str(uid), None)
     if ancien:
         supprimer(ancien.get("prompt_id"))
-    w = {"uid": uid, "nom": nom_affiche(user), "step": "heure", "debut": time.time(), "prompt_id": None}
+    w = {"uid": uid, "nom": nom_affiche(user), "step": "heure", "debut": time.time(), "prompt_id": None, "chat": groupe()}
     state["wizards"][str(uid)] = w
     envoyer_question(w)
 
@@ -862,6 +954,8 @@ def valider_init_data(init_data):
         if time.time() - int(d.get("auth_date", "0")) > 86400:
             return None
         user = json.loads(d.get("user", "{}"))
+        if user.get("id"):
+            user["_start"] = d.get("start_param", "")
         return user if user.get("id") else None
     except Exception:
         return None
@@ -872,10 +966,9 @@ def creer_course_depuis_formulaire(corps):
     user = valider_init_data(str(corps.get("initData", "")))
     if not user:
         return 403, {"ok": False, "erreur": "Formulaire non reconnu. Rouvre-le depuis le groupe."}
-    membre = api("getChatMember", chat_id=CHAT_ID, user_id=user["id"])
-    infos = membre.get("result") or {}
-    if infos.get("status") not in ("creator", "administrator", "member") and not (
-            infos.get("status") == "restricted" and infos.get("is_member")):
+    # Ouvert depuis Easy Web (startapp=web) : la course est publiée dans Easy Web.
+    chat = WEB_CHAT_ID if (user.get("_start") == "web" and WEB_CHAT_ID) else CHAT_ID
+    if not membre_de(user["id"], chat):
         return 403, {"ok": False, "erreur": "Réservé aux membres du groupe."}
     heure = nettoyer_champ(str(corps.get("heure", "")))
     depart = nettoyer_champ(str(corps.get("depart", "")))
@@ -890,8 +983,8 @@ def creer_course_depuis_formulaire(corps):
     if demain:
         heure = f"demain {heure}"
     w = {"uid": user["id"], "nom": nom_affiche(user), "heure": heure, "demain": demain,
-         "depart": depart, "arrivee": arrivee, "commentaire": commentaire}
-    with LOCK:
+         "depart": depart, "arrivee": arrivee, "commentaire": commentaire, "chat": chat}
+    with LOCK, dans(chat):
         publier_course(w)
         retirer_invitation(user["id"])
         retirer_libre(user["id"])
@@ -1014,16 +1107,21 @@ def traiter_message(m):
     if chat.get("type") == "private":
         message_prive(m)
         return
-    if str(chat.get("id")) != str(CHAT_ID):
+    if not est_groupe(chat.get("id")):
         if chat.get("type") in ("group", "supergroup"):
             logger.warning(f"Message ignoré d'un autre groupe : id={chat.get('id')} ({chat.get('title')})")
         return
+    with dans(chat.get("id")):
+        traiter_message_groupe(m)
+
+
+def traiter_message_groupe(m):
     user = m.get("from") or {}
     texte = (m.get("text") or "").strip()
     if user.get("is_bot") or not user.get("id") or not texte:
         return
     if prix.est_demande(texte):
-        repondre_prix(CHAT_ID, m["message_id"], texte)
+        repondre_prix(groupe(), m["message_id"], texte)
         return
     commande = texte.split()[0].split("@")[0].lower() if texte.startswith("/") else None
     if commande in ("/clavier", "/start"):
@@ -1051,9 +1149,28 @@ def traiter_callback(cb):
     uid = user.get("id")
     nom = nom_affiche(user)
     msg = cb.get("message") or {}
-    if str(msg.get("chat", {}).get("id")) != str(CHAT_ID):
+    if not est_groupe(msg.get("chat", {}).get("id")):
         repondre_callback(cb_id)
         return
+    with dans(msg["chat"]["id"]):
+        traiter_callback_groupe(cb, cb_id, user, uid, nom, msg)
+
+
+def transferer(c, user):
+    """Easy Web -> groupe principal : une course neuve, postée au nom de celui qui transfère,
+    sans les refus ni rien qui montre qu'elle vient d'ailleurs."""
+    w = {"uid": user["id"], "nom": nom_affiche(user), "heure": c["heure"], "demain": c.get("demain"),
+         "depart": c["depart"], "arrivee": c["arrivee"], "commentaire": c.get("commentaire", ""),
+         "chat": CHAT_ID, "source": c["id"]}
+    copie = publier_course(w)
+    if not copie:
+        return False
+    c["transfert_vers"], c["transfere_par"] = copie["id"], w["nom"]
+    cloturer(c, "transferee")
+    return True
+
+
+def traiter_callback_groupe(cb, cb_id, user, uid, nom, msg):
     action, _, ref = (cb.get("data") or "").partition(":")
 
     if action == "posinfo":
@@ -1081,6 +1198,16 @@ def traiter_callback(cb):
     c = state["courses"].get(ref)
     if not c:
         repondre_callback(cb_id, "Course introuvable.")
+        return
+    if action == "tr":
+        if c["statut"] != "open" or not est_web(c.get("chat")):
+            repondre_callback(cb_id, "Cette course ne peut plus être envoyée.", alerte=True)
+        elif uid != c["donneur_id"] and statut_membre(uid, groupe()).get("status") not in ("creator", "administrator"):
+            repondre_callback(cb_id, "Seul le donneur ou un administrateur peut l'envoyer.", alerte=True)
+        elif transferer(c, user):
+            repondre_callback(cb_id, f"Envoyée sur {NOM_GROUPE} ✅")
+        else:
+            repondre_callback(cb_id, "Envoi impossible, réessaie.", alerte=True)
         return
     if c["statut"] != "open":
         if c["statut"] == "prise":
@@ -1138,17 +1265,22 @@ def maintenance():
     now = time.time()
     # Chaque matin (6 h), les boutons du bas sont reposés pour tout le monde.
     maintenant = datetime.now(TZ)
-    if maintenant.hour >= 6 and state.get("clavier_jour") != maintenant.strftime("%Y-%m-%d"):
+    jour = maintenant.strftime("%Y-%m-%d")
+    if maintenant.hour >= 6 and state.get("clavier_jour") != jour:
         envoyer_clavier()
+        change = True
+    if WEB_CHAT_ID and maintenant.hour >= 6 and state.setdefault("claviers_jour", {}).get(WEB_CHAT_ID) != jour:
+        with dans(WEB_CHAT_ID):
+            envoyer_clavier()
         change = True
     for uid, inv in list(state["invitations"].items()):
         if now - inv["ts"] > INVITATION_SECONDS:
-            supprimer(inv["id"])
+            supprimer(inv["id"], inv.get("chat"))
             del state["invitations"][uid]
             change = True
     for uid, a in list(state["astuces"].items()):
         if now - a["ts"] > ASTUCE_SECONDS:
-            supprimer(a["id"])
+            supprimer(a["id"], a.get("chat"))
             del state["astuces"][uid]
             change = True
     for uid, p in list(state["positions"].items()):
@@ -1157,15 +1289,23 @@ def maintenance():
             change = True
     for uid, l in list(state["libres"].items()):
         if now - l["ts"] > LIBRE_SECONDS:
-            supprimer(l["id"])
+            supprimer(l["id"], l.get("chat"))
             del state["libres"][uid]
             change = True
     for cle, w in list(state["wizards"].items()):
         if now - w["debut"] > WIZARD_TIMEOUT_SECONDES:
-            supprimer(w.get("prompt_id"))
+            supprimer(w.get("prompt_id"), w.get("chat"))
             del state["wizards"][cle]
             change = True
     for cid, c in list(state["courses"].items()):
+        with dans(c.get("chat")):
+            change = entretenir_course(cid, c, now) or change
+    return change
+
+
+def entretenir_course(cid, c, now):
+    change = False
+    if True:
         if c["statut"] == "open" and c.get("demain"):
             # Course de demain : aucun rappel, c'est le donneur qui gère. Clôture silencieuse après 36 h.
             if now - c["cree_ts"] > 36 * 3600:
@@ -1197,6 +1337,9 @@ def main():
     logger.info("Bot de courses démarré.")
     try:
         envoyer_clavier()
+        if WEB_CHAT_ID:
+            with dans(WEB_CHAT_ID):
+                envoyer_clavier()
     except Exception:
         logger.exception("Envoi du clavier au démarrage impossible")
     while True:
