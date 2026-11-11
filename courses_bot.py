@@ -63,7 +63,8 @@ LOCK = threading.RLock()
 
 TZ = ZoneInfo("Europe/Paris")
 API = f"https://api.telegram.org/bot{TOKEN}"
-BOUTON_DONNER = "🚖 Donner une course"
+BOUTON_DONNER = "Donner une course ›"
+ANCIENS_BOUTONS_DONNER = {"🚖 Donner une course"}  # claviers pas encore rafraîchis
 BOUTON_LIBRE = "🟢 Je suis libre"
 BOUTON_POSITION = "📍 Me localiser"
 POS_ACTIVE_SECONDS = 600   # position « en ligne » si mise à jour il y a moins de 10 min
@@ -338,8 +339,8 @@ def epingler_formulaire():
     epingles = state.setdefault("epingles", {})
     if epingles.get(groupe()):
         return
-    mid = envoyer("🚖 <b>Donner une course</b> : appuie sur le bouton.",
-                  reply_markup={"inline_keyboard": [[{"text": "🚖 Donner une course", "url": lien_formulaire()}]]},
+    mid = envoyer("Nouvelle course : appuie sur le bouton.",
+                  reply_markup={"inline_keyboard": [[{"text": "Donner une course ›", "url": lien_formulaire()}]]},
                   silencieux=True)
     if mid:
         epingles[groupe()] = mid
@@ -1155,7 +1156,7 @@ def traiter_message_groupe(m):
     elif texte == BOUTON_LIBRE:
         supprimer(m["message_id"])
         declarer_libre(user)
-    elif texte == BOUTON_DONNER:
+    elif texte == BOUTON_DONNER or texte in ANCIENS_BOUTONS_DONNER:
         supprimer(m["message_id"])
         if APP_LINK:
             inviter_formulaire(user)
