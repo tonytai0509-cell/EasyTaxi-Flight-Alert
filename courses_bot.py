@@ -422,9 +422,19 @@ def adresse_cliquable(adresse):
     return f'<a href="{url}">{echapper(adresse)}</a>'
 
 
+# Blancs invisibles en fin de 1re ligne : la bulle s'élargit à peu près à la largeur des
+# boutons en dessous (Telegram règle la bulle sur le texte, pas sur les boutons).
+LARGEUR_CARTE = int(os.getenv("COURSES_LARGEUR_CARTE", "36"))
+
+
+def bourrage(texte_visible):
+    return "\u2800" * max(0, LARGEUR_CARTE - len(texte_visible))
+
+
 def texte_course(c):
+    entete = f"🕐 {c['heure']} · {c['donneur_nom']}, {c['poste_a']}"
     lignes = [
-        f"🕐 <b>{echapper(c['heure'])}</b> · <i>{echapper(c['donneur_nom'])}, {c['poste_a']}</i>",
+        f"🕐 <b>{echapper(c['heure'])}</b> · <i>{echapper(c['donneur_nom'])}, {c['poste_a']}</i>{bourrage(entete)}",
         f"📍 <b>{adresse_cliquable(c['depart'])}</b>",
         f"🏁 <b>{adresse_cliquable(c['arrivee'])}</b>",
     ]
@@ -483,10 +493,12 @@ def clavier_course(c, avec_ecrire=True):
     return {"inline_keyboard": [
         [{"text": "✅ Accepter", "callback_data": f"acc:{cid}"},
          {"text": "❌ Refuser", "callback_data": f"ref:{cid}"}],
-        [{"text": "🤝 Trouvé", "callback_data": f"found:{cid}"},
-         {"text": "🗑 Annuler", "callback_data": f"cancel:{cid}"},
-         {"text": COPIER_LABEL, "copy_text": {"text": texte_copie(c)}}],
-    ] + ([[{"text": f"↪️ Envoyer à {NOM_GROUPE}", "callback_data": f"tr:{cid}"}]] if est_web(c.get("chat")) else [])}
+        # 2e ligne en icônes (Trouvé, Annuler, Copier, Envoyer) pour prendre moins de place.
+        [{"text": "🤝", "callback_data": f"found:{cid}"},
+         {"text": "🗑", "callback_data": f"cancel:{cid}"},
+         {"text": COPIER_LABEL, "copy_text": {"text": texte_copie(c)}}]
+        + ([{"text": "↪️ EasyTaxi", "callback_data": f"tr:{cid}"}] if est_web(c.get("chat")) else []),
+    ]}
 
 
 def maj_carte(c):
