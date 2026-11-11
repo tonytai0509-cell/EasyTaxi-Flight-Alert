@@ -424,7 +424,9 @@ def adresse_cliquable(adresse):
 
 # Blancs invisibles en fin de 1re ligne : la bulle s'élargit à peu près à la largeur des
 # boutons en dessous (Telegram règle la bulle sur le texte, pas sur les boutons).
-LARGEUR_CARTE = int(os.getenv("COURSES_LARGEUR_CARTE", "36"))
+# Désactivé (0) : sur Android la bulle reste plus étroite que les boutons, le bourrage ne
+# faisait que couper la 1re ligne en deux.
+LARGEUR_CARTE = int(os.getenv("COURSES_LARGEUR_CARTE", "0"))
 
 
 def bourrage(texte_visible):
@@ -497,7 +499,7 @@ def clavier_course(c, avec_ecrire=True):
         [{"text": "🤝", "callback_data": f"found:{cid}"},
          {"text": "🗑", "callback_data": f"cancel:{cid}"},
          {"text": COPIER_LABEL, "copy_text": {"text": texte_copie(c)}}]
-        + ([{"text": "↪️ EasyTaxi", "callback_data": f"tr:{cid}"}] if est_web(c.get("chat")) else []),
+        + ([{"text": "↪️ ET", "callback_data": f"tr:{cid}"}] if est_web(c.get("chat")) else []),
     ]}
 
 
