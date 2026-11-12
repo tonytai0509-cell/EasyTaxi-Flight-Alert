@@ -1020,10 +1020,21 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .lot{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:14px;font-weight:500}
 .lot span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lot small{color:var(--hint);font-weight:600}
 .lot button{border:0;background:transparent;color:var(--hint);font-size:18px;padding:0 4px}
+.onglets{display:flex;gap:6px;background:var(--card);border-radius:14px;padding:4px;margin:0 0 6px}
+.onglets button{flex:1;border:0;border-radius:11px;padding:10px;background:transparent;color:var(--hint);font:600 15px "Poppins",-apple-system,Roboto,sans-serif}
+.onglets button.actif{background:var(--btn);color:var(--btnfg)}
+.ret{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:14px;padding:12px;margin-top:10px;font-size:14px;line-height:1.35}
+.ret span{flex:1;min-width:0}.ret small{display:block;color:var(--hint);margin-top:3px}
+.ret button{border:0;border-radius:10px;padding:10px 12px;background:var(--btn);color:var(--btnfg);font:600 14px "Poppins",-apple-system,Roboto,sans-serif;white-space:nowrap}
+.ret button:disabled{opacity:.45}
+#msg-ret{margin-top:14px;color:var(--hint);text-align:center;font-size:15px}
 #msg{margin-top:14px;color:#e5484d;min-height:22px;font-size:15px;text-align:center}
 </style></head><body>
 <h1>Donner une course</h1>
 <div class="trait"></div>
+<div class="onglets"><button type="button" id="o-nouv" class="actif">Nouvelle course</button><button type="button" id="o-ret">↩️ Retour</button></div>
+<div id="p-ret" style="display:none"><div id="liste-ret"></div><div id="msg-ret"></div></div>
+<div id="p-nouv">
 <div id="lot"></div>
 
 <label for="hh">Heure</label>
@@ -1046,6 +1057,7 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 <button class="ajouter" id="plus" type="button">＋ Ajouter une course</button>
 <button class="envoyer" id="ok" type="button">Envoyer au groupe</button>
 <div id="msg"></div>
+</div>
 
 <script>
 var tg=(window.Telegram&&window.Telegram.WebApp)||{ready:function(){},expand:function(){},close:function(){},initData:""};
@@ -1297,6 +1309,40 @@ function envoyer(){
     .catch(function(){$("msg").textContent="Pas de connexion, réessaie.";$("ok").disabled=false;libelleOk();});
 }
 $("ok").addEventListener("click",envoyer);
+/* Onglet « Retour » : mes courses du jour, un appui envoie le retour en « maintenant » */
+function onglet(ret){
+  $("o-nouv").classList.toggle("actif",!ret);$("o-ret").classList.toggle("actif",ret);
+  $("p-nouv").style.display=ret?"none":"";$("p-ret").style.display=ret?"":"none";
+  if(ret)chargerRetours();
+}
+$("o-nouv").addEventListener("click",function(){tap();onglet(false);});
+$("o-ret").addEventListener("click",function(){tap();onglet(true);});
+function court(a){return String(a||"").split(",")[0];}
+function chargerRetours(){
+  $("msg-ret").textContent="Chargement…";$("liste-ret").innerHTML="";
+  fetch("/api/mes_courses",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData})})
+    .then(function(r){return r.json();}).then(function(j){
+      if(!j.ok){$("msg-ret").textContent=j.erreur||"Erreur, réessaie.";return;}
+      $("msg-ret").textContent=j.courses.length?"":"Aucune course donnée aujourd'hui.";
+      j.courses.forEach(function(c){
+        var d=document.createElement("div");d.className="ret";
+        var s=document.createElement("span");
+        var b0=document.createElement("b");b0.textContent=c.heure+" ";s.appendChild(b0);
+        s.appendChild(document.createTextNode(court(c.depart)+" → "+court(c.arrivee)));
+        var sm=document.createElement("small");sm.textContent=c.envoye?"retour déjà envoyé":c.etat;s.appendChild(sm);
+        var b=document.createElement("button");b.type="button";b.textContent=c.envoye?"Envoyé":"↩️ Retour";b.disabled=c.envoye;
+        b.addEventListener("click",function(){
+          tap();b.disabled=true;b.textContent="Envoi…";
+          fetch("/api/retour",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData,id:c.id})})
+            .then(function(r){return r.json();}).then(function(k){
+              if(k.ok){try{tg.HapticFeedback.notificationOccurred("success");}catch(e){}b.textContent="Envoyé";sm.textContent="retour envoyé au groupe ✅";}
+              else{b.disabled=false;b.textContent="↩️ Retour";$("msg-ret").textContent=k.erreur||"Erreur, réessaie.";}
+            }).catch(function(){b.disabled=false;b.textContent="↩️ Retour";$("msg-ret").textContent="Pas de connexion, réessaie.";});
+        });
+        d.appendChild(s);d.appendChild(b);$("liste-ret").appendChild(d);
+      });
+    }).catch(function(){$("msg-ret").textContent="Pas de connexion, réessaie.";});
+}
 /* Fermeture automatique après 2 min d'inactivité (évite la barre « Dispatch » oubliée en bas) */
 var idleT=null;
 function armerIdle(){clearTimeout(idleT);idleT=setTimeout(function(){tg.close();},120000);}
@@ -1478,6 +1524,32 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                 logger.exception("Positions")
                 self._repondre(400, json.dumps({"ok": False}))
             return
+        if self.path in ("/api/mes_courses", "/api/retour"):
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                corps = json.loads(self.rfile.read(n).decode("utf-8")) if 0 < n <= 10000 else {}
+                user = valider_init_data(str(corps.get("initData", "")))
+                chat = WEB_CHAT_ID if (user and user.get("_start") == "web" and WEB_CHAT_ID) else CHAT_ID
+                if not user or not membre_de(user["id"], chat):
+                    self._repondre(403, json.dumps({"ok": False, "erreur": "Réservé aux membres du groupe."}))
+                    return
+                with LOCK:
+                    if self.path == "/api/mes_courses":
+                        rep_ = {"ok": True, "courses": courses_pour_retour(user)}
+                    else:
+                        c = state["courses"].get(str(corps.get("id", "")))
+                        if not c or str(c.get("chat")) != str(chat):
+                            rep_ = {"ok": False, "erreur": "Course introuvable."}
+                        else:
+                            with dans(chat):
+                                ok, msg = faire_retour(c, user)
+                            rep_ = {"ok": ok, "erreur": msg} if not ok else {"ok": True}
+                            sauver_etat()
+                self._repondre(200, json.dumps(rep_, ensure_ascii=False))
+            except Exception:
+                logger.exception("Retour")
+                self._repondre(400, json.dumps({"ok": False, "erreur": "Requête invalide."}))
+            return
         if self.path != "/api/course":
             self._repondre(404, json.dumps({"ok": False}))
             return
@@ -1609,28 +1681,50 @@ def traiter_callback(cb):
         traiter_callback_groupe(cb, cb_id, user, uid, nom, msg)
 
 
-def envoyer_retour(cb_id, user, uid, ref):
-    """« ↩️ Retour » : publie tout de suite la course inverse, en « maintenant »."""
-    c = state["courses"].get(ref)
-    if not c:
-        repondre_callback(cb_id, "Course introuvable.")
-        return
-    if uid != c["donneur_id"] and not est_admin(uid):
-        repondre_callback(cb_id, "Seul celui qui a donné la course peut demander le retour.")
-        return
-    deja = state["courses"].get(c.get("retour_id") or "")
-    if deja:
-        repondre_callback(cb_id, "↩️ Le retour a déjà été envoyé.")
-        return
+def faire_retour(c, user, admin_ok=False):
+    """Publie tout de suite la course inverse, en « maintenant ». Retourne (ok, message)."""
+    uid = user["id"]
+    if uid != c["donneur_id"] and not (admin_ok and est_admin(uid)):
+        return False, "Seul celui qui a donné la course peut demander le retour."
+    if state["courses"].get(c.get("retour_id") or ""):
+        return False, "↩️ Le retour a déjà été envoyé."
     w = {"uid": uid, "nom": nom_affiche(user), "heure": "maintenant", "demain": False,
          "depart": c["arrivee"], "arrivee": c["depart"], "commentaire": c.get("commentaire", ""),
          "chat": c.get("chat"), "retour_de": c["id"]}
     r = publier_course(w)
     if not r:
-        repondre_callback(cb_id, "Envoi impossible, réessaie.")
-        return
+        return False, "Envoi impossible, réessaie."
     c["retour_id"] = r["id"]
-    repondre_callback(cb_id, "↩️ Retour envoyé au groupe.")
+    return True, "↩️ Retour envoyé au groupe."
+
+
+def envoyer_retour(cb_id, user, uid, ref):
+    """Bouton « ↩️ Retour » sous la bulle."""
+    c = state["courses"].get(ref)
+    if not c:
+        repondre_callback(cb_id, "Course introuvable.")
+        return
+    with dans(c.get("chat")):
+        _, msg = faire_retour(c, user, admin_ok=True)
+    repondre_callback(cb_id, msg)
+
+
+def courses_pour_retour(user):
+    """Onglet « Retour » du formulaire : les courses du jour données par cette personne, dans ce groupe."""
+    chat = WEB_CHAT_ID if (user.get("_start") == "web" and WEB_CHAT_ID) else CHAT_ID
+    limite = time.time() - 20 * 3600
+    res = []
+    for c in sorted(state["courses"].values(), key=lambda c: -c["cree_ts"]):
+        if (str(c.get("chat")) != str(chat) or c["donneur_id"] != user["id"] or c["cree_ts"] < limite
+                or c.get("retour_de") or c.get("demain")):
+            continue
+        copie = copie_de(c)
+        pris = c if c["statut"] == "prise" else copie if (copie and copie["statut"] == "prise") else None
+        etat = (f"✅ {prenom(pris.get('pris_par_nom'))}" if pris else
+                {"open": "🟢 libre", "trouvee": "🤝 ailleurs", "transferee": "↪️ sur ET"}.get(c["statut"], "fermée"))
+        res.append({"id": c["id"], "heure": c["heure"], "depart": c["depart"], "arrivee": c["arrivee"],
+                    "etat": etat, "envoye": bool(state["courses"].get(c.get("retour_id") or ""))})
+    return res[:15]
 
 
 def transferer(c, user, sans_tableau=False, lot=None, silencieux=False):
