@@ -526,7 +526,7 @@ def maj_carte(c):
 
 def _maj_carte(c):
     global COPIER_LABEL
-    if est_web(c.get("chat")) and not c.get("message_id"):
+    if not c.get("message_id"):
         maj_tableau()
         return
     d = api("editMessageText", chat_id=groupe(), message_id=c["message_id"],
@@ -621,7 +621,9 @@ def ligne_tableau(c):
         if copie and copie["statut"] == "open":
             return f"↪️ {trajet} · sur ET"
         return f"⌛ {trajet} · ET"
-    return {"trouvee": "🤝", "annulee": "🗑", "arretee": "⏹", "expiree": "⌛"}.get(s, "•") + f" {trajet}"
+    if s == "trouvee":
+        return f"🤝 {trajet} · prise ailleurs"
+    return {"annulee": "🗑", "arretee": "⏹", "expiree": "⌛"}.get(s, "•") + f" {trajet}"
 
 
 def echapper_rien(t):
@@ -637,8 +639,10 @@ def texte_tableau(courses):
 def clavier_tableau(courses):
     lignes = [[{"text": ligne_tableau(c), "callback_data": f"t:{c['id']}"}] for c in courses]
     if any(c["statut"] == "open" for c in courses):
-        lignes.append([{"text": "↪️ Libres → EasyTaxi", "callback_data": "tall:"},
-                       {"text": "🗑 Annuler une course", "callback_data": "tann:"}])
+        bas = [{"text": "🤝 Prise ailleurs", "callback_data": "tann:"}]
+        if est_web():
+            bas.insert(0, {"text": "↪️ Libres → EasyTaxi", "callback_data": "tall:"})
+        lignes.append(bas)
     return {"inline_keyboard": lignes}
 
 
@@ -667,7 +671,7 @@ def maj_tableau(reposter=False):
 
 
 def detail_course(c):
-    l = [c["heure"], f"📍 {c['depart']}", f"🏁 {c['arrivee']}"]
+    l = [f"{c['heure']} · {c['donneur_nom']}", f"📍 {c['depart']}", f"🏁 {c['arrivee']}"]
     if c.get("commentaire"):
         l.append(f"💬 {c['commentaire']}")
     return "\n".join(l)
@@ -696,10 +700,10 @@ def deuxieme_appui(uid, action, ref):
 def callback_tableau(cb_id, user, uid, nom, action, ref):
     if action == "tann":
         if not est_admin(uid):
-            alerte(cb_id, "Réservé aux administrateurs. Le donneur peut annuler sa course en touchant sa ligne deux fois.")
+            alerte(cb_id, "Réservé aux administrateurs. Le donneur touche deux fois sa ligne pour la marquer prise ailleurs.")
             return
         _mode_annuler[uid] = time.time()
-        alerte(cb_id, "Mode annulation (60 s) : touche deux fois la course à annuler.")
+        alerte(cb_id, "Prise ailleurs (60 s) : touche deux fois la course concernée.")
         return
     if action == "tall":
         libres = [c for c in courses_tableau() if c["statut"] == "open"]
@@ -711,7 +715,9 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
             alerte(cb_id, f"Envoyer {len(libres)} course(s) libre(s) sur {NOM_GROUPE} ?\n\n"
                           f"Touche à nouveau le bouton dans les {CONFIRMATION_SECONDES} s pour confirmer.")
         else:
-            n = sum(1 for c in libres if transferer(c, user))
+            n = sum(1 for c in libres if transferer(c, user, sans_tableau=True))
+            with dans(CHAT_ID):
+                maj_tableau(reposter=True)   # une seule notification dans EasyTaxi Group
             repondre_callback(cb_id, f"{n} course(s) envoyée(s) sur {NOM_GROUPE} ✅")
         return
     c = state["courses"].get(ref)
@@ -734,12 +740,12 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
     annuler = uid == c["donneur_id"] or (time.time() - _mode_annuler.get(uid, 0) < ANNULATION_SECONDES and est_admin(uid))
     if annuler:
         if not deuxieme_appui(uid, "ann", ref):
-            alerte(cb_id, f"Annuler cette course ?\n{detail_course(c)}\n\n"
-                          f"Touche à nouveau la ligne dans les {CONFIRMATION_SECONDES} s pour l'annuler.")
+            alerte(cb_id, f"Prise ailleurs ?\n{detail_course(c)}\n\n"
+                          f"Touche à nouveau la ligne dans les {CONFIRMATION_SECONDES} s pour la retirer.")
             return
         _mode_annuler.pop(uid, None)
-        cloturer(c, "annulee")
-        repondre_callback(cb_id, "Course annulée.")
+        cloturer(c, "trouvee")
+        repondre_callback(cb_id, "C'est noté : prise ailleurs 🤝")
         return
     if not deuxieme_appui(uid, "prendre", ref):
         alerte(cb_id, f"Prendre cette course ?\n{detail_course(c)}\n\n"
@@ -811,8 +817,8 @@ def _publier_course(w):
         "message_id": None,
         "rappel_id": None,
     }
-    if est_web():
-        # Easy Web : pas de carte, une ligne de plus sur le tableau (remis en bas du groupe).
+    if True:
+        # Les deux groupes : pas de carte, une ligne de plus sur le tableau (remis en bas du groupe).
         state["courses"][cid] = c
         if not w.get("sans_tableau"):
             maj_tableau(reposter=True)
@@ -1314,8 +1320,7 @@ def creer_course_depuis_formulaire(corps):
         for i, w in enumerate(a_publier):
             w["silencieux"] = i > 0
             publier_course(w)
-        if est_web():
-            maj_tableau(reposter=True)   # une seule notification pour tout le lot
+        maj_tableau(reposter=True)   # une seule notification pour tout le lot
         retirer_invitation(user["id"])
         retirer_libre(user["id"])
         sauver_etat()
@@ -1490,12 +1495,12 @@ def traiter_callback(cb):
         traiter_callback_groupe(cb, cb_id, user, uid, nom, msg)
 
 
-def transferer(c, user):
+def transferer(c, user, sans_tableau=False):
     """Easy Web -> groupe principal : une course neuve, postée au nom de celui qui transfère,
     sans les refus ni rien qui montre qu'elle vient d'ailleurs."""
     w = {"uid": user["id"], "nom": nom_affiche(user), "heure": c["heure"], "demain": c.get("demain"),
          "depart": c["depart"], "arrivee": c["arrivee"], "commentaire": c.get("commentaire", ""),
-         "chat": CHAT_ID, "source": c["id"]}
+         "chat": CHAT_ID, "source": c["id"], "sans_tableau": sans_tableau}
     copie = publier_course(w)
     if not copie:
         return False
@@ -1647,8 +1652,8 @@ def maintenance():
 
 def entretenir_course(cid, c, now):
     change = False
-    if est_web(c.get("chat")) and not c.get("message_id"):
-        # Tableau Easy Web : pas de rappels ; on retire les lignes fermées depuis 30 min.
+    if not c.get("message_id"):
+        # Tableau : pas de rappels ; on retire les lignes fermées depuis 30 min.
         if c["statut"] == "open" and now - c["cree_ts"] > (36 * 3600 if c.get("demain") else EXPIRATION_MINUTES * 60):
             cloturer(c, "expiree")
             return True
