@@ -47,6 +47,7 @@ ETABLISSEMENTS = [
     ("Centre Antoine Lacassagne (bâtiment B)", "cal b lacassagne b", "33 avenue de Valombrose, 06189 Nice"),
     ("Hôpital Privé Arnault Tzanck Mougins", "iat mougins tzanck mougins", "122 avenue du Docteur Maurice Donat, 06250 Mougins"),
     ("Hôpital Sainte-Marie", "ste marie sainte marie st marie", "87 avenue Joseph Raybaud, Nice"),
+    ("Centre Hélio-Marin", "chm helio marin", "1090 avenue Julia, 06220 Vallauris"),
 ]
 
 OPTIONS = {

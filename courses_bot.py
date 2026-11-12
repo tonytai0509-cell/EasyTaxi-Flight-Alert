@@ -1184,6 +1184,7 @@ var ETAB=[
  ["Institut Arnault Tzanck, Saint-Laurent-du-Var",["tzanck","tz","iat","crc nice","iat st lo","iat saint laurent","iat slv"]],
  ["Hôpital Privé Arnault Tzanck, 122 avenue du Docteur Maurice Donat, Mougins",["iat mougins","tzanck mougins"]],
  ["Hôpital Sainte-Marie, 87 avenue Joseph Raybaud, Nice",["ste marie","sainte marie","st marie"]],
+ ["Centre Hélio-Marin, 1090 avenue Julia, Vallauris",["chm","helio marin","centre helio marin"]],
  ["Centre Hospitalier Princesse Grace (CHPG), Monaco",["chpg","princesse grace"]],
  ["Aéroport Nice Côte d'Azur - Terminal 1",["t1","terminal 1"]],
  ["Aéroport Nice Côte d'Azur - Terminal 2",["t2","terminal 2"]],
