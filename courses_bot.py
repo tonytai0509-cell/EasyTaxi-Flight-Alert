@@ -647,7 +647,7 @@ def bouton_tableau(n, c):
     s, copie = c["statut"], copie_de(c)
     num = f" {n}" if n else ""
     if s == "open":
-        t = f"✅ Prendre{num}"
+        t = f"✅{num}" if n else "✅ Prendre"   # plusieurs courses : juste le numéro (sinon coupé sur téléphone)
     elif s == "prise":
         t = f"✔️{num} {prenom(c['pris_par_nom'])}"
     elif s == "transferee":
