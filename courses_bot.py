@@ -639,16 +639,17 @@ def texte_lot(courses):
         if c["donneur_nom"] not in donneurs:
             donneurs.append(c["donneur_nom"])
     qui = echapper(", ".join(donneurs))
-    if len(courses) == 1:
-        return f"🚕 <b>Course de {qui}</b>"
-    return f"🚕 <b>{len(courses)} courses de {qui}</b>"
+    titre = f"Course de {qui}" if len(courses) == 1 else f"{len(courses)} courses de {qui}"
+    if any(c.get("urgent") and c["statut"] == "open" for c in courses):
+        return f"🚨 <b>URGENT · {titre}</b>"
+    return f"🚕 <b>{titre}</b>"
 
 
 def ligne_tableau(c):
     trajet = f"{c['heure']} · {adresse_courte(c['depart'])} → {adresse_courte(c['arrivee'])}"
     s, copie = c["statut"], copie_de(c)
     if s == "open":
-        return f"✅ {trajet}"
+        return f"{'🚨' if c.get('urgent') else '✅'} {trajet}"
     if s == "prise":
         return f"✔️ {prenom(c['pris_par_nom'])} · {trajet}"
     if s == "transferee":
@@ -677,9 +678,11 @@ def bouton_tableau(n, c):
     return {"text": t, "callback_data": f"t:{c['id']}"}
 
 
-def bouton_ligne(c, avec_lien=True):
+def bouton_ligne(c, avec_lien=True, avec_style=True):
     """Ligne d'une course. Prise : la ligne ouvre la conversation privée avec le chauffeur."""
     b = {"text": ligne_tableau(c), "callback_data": f"t:{c['id']}"}
+    if avec_style and c.get("urgent") and c["statut"] == "open":
+        b["style"] = "danger"   # bouton rouge (versions récentes de Telegram)
     pris = c if c["statut"] == "prise" else copie_de(c) if c["statut"] == "transferee" else None
     ecrire = bouton_ecrire(pris) if (avec_lien and pris) else None
     if ecrire:
@@ -687,9 +690,9 @@ def bouton_ligne(c, avec_lien=True):
     return b
 
 
-def clavier_lot(lot, courses, avec_lien=True):
+def clavier_lot(lot, courses, avec_lien=True, avec_style=True):
     seul = len(courses) == 1
-    lignes = [[bouton_ligne(c, avec_lien)] for c in courses]
+    lignes = [[bouton_ligne(c, avec_lien, avec_style)] for c in courses]
     libres = [c for c in courses if c["statut"] == "open"]
     if courses:
         # Copier pour coller dans un autre groupe : un bouton par course, même prise (repérée par son heure).
@@ -716,9 +719,10 @@ def maj_lot(lot, nouveau=False, silencieux=False):
         return
     info = state.setdefault("lots", {}).setdefault(lot, {"chat": str(groupe()), "mid": None})
     texte = texte_lot(courses)
-    for avec_lien in (True, False):
-        # Profil privé sans nom d'utilisateur : Telegram refuse le lien, on remet la ligne simple.
-        clavier = clavier_lot(lot, courses, avec_lien)
+    # Si Telegram refuse : d'abord sans la couleur rouge, puis sans le lien privé
+    # (profil sans nom d'utilisateur), puis sans les deux.
+    for avec_lien, avec_style in ((True, True), (True, False), (False, True), (False, False)):
+        clavier = clavier_lot(lot, courses, avec_lien, avec_style)
         if info.get("mid") and not nouveau:
             d = api("editMessageText", chat_id=info["chat"], message_id=info["mid"], text=texte, parse_mode="HTML",
                     reply_markup=clavier, link_preview_options={"is_disabled": True})
@@ -878,6 +882,7 @@ def _publier_course(w):
         "arrivee": w["arrivee"],
         "commentaire": w.get("commentaire", ""),
         "demain": bool(w.get("demain")),
+        "urgent": bool(w.get("urgent")),
         "poste_a": datetime.now(TZ).strftime("%H:%M"),
         "cree_ts": time.time(),
         "dernier_rappel_ts": time.time(),
@@ -994,6 +999,8 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .liste div:active{background:var(--card)}
 .envoyer{width:100%;margin-top:30px;padding:17px;font:600 18px "Poppins",-apple-system,Roboto,sans-serif;border:0;border-radius:14px;background:var(--btn);color:var(--btnfg)}
 .envoyer:disabled{opacity:.55}
+.urgent{width:100%;margin-top:22px;padding:13px;font:700 16px "Poppins",-apple-system,Roboto,sans-serif;border:2px solid #e5484d;border-radius:14px;background:transparent;color:#e5484d}
+.urgent.actif{background:#e5484d;color:#fff}
 .ajouter{display:none;width:100%;margin-top:22px;padding:14px;font:600 16px "Poppins",-apple-system,Roboto,sans-serif;border:2px dashed var(--line);border-radius:14px;background:transparent;color:var(--btn)}
 .lot{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:14px;font-weight:500}
 .lot span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lot small{color:var(--hint);font-weight:600}
@@ -1020,6 +1027,7 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 <label for="commentaire">Commentaire (facultatif)</label>
 <input id="commentaire" placeholder="Ex : 2 passagers, bagages" autocomplete="off" maxlength="120">
 
+<button class="urgent" id="urgent" type="button">🚨 Urgent</button>
 <button class="ajouter" id="plus" type="button">＋ Ajouter une course</button>
 <button class="envoyer" id="ok" type="button">Envoyer au groupe</button>
 <div id="msg"></div>
@@ -1202,9 +1210,10 @@ micro("depart");micro("arrivee");
 
 /* Envoi (Easy Web : plusieurs courses d'un coup avec « Ajouter une course ») */
 var WEB=false;try{WEB=(tg.initDataUnsafe||{}).start_param==="web";}catch(e){}
-var lot=[];
+var lot=[],urgent=false;
+$("urgent").addEventListener("click",function(){tap();urgent=!urgent;$("urgent").classList.toggle("actif",urgent);});
 function courante(){
-  var d={demain:demain,heure:maintenant?"maintenant":getHeure(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
+  var d={urgent:urgent,demain:demain,heure:maintenant?"maintenant":getHeure(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
   d.depart=resoudre(d.depart)||d.depart;d.arrivee=resoudre(d.arrivee)||d.arrivee;
   return d;
 }
@@ -1223,7 +1232,7 @@ function afficherLot(){
   lot.forEach(function(d,i){
     var r=document.createElement("div");r.className="lot";
     var s=document.createElement("span");
-    s.textContent=(d.demain?"demain ":"")+(d.heure==="maintenant"?"maint.":d.heure)+" · "+d.depart.split(",")[0]+" → "+d.arrivee.split(",")[0];
+    s.textContent=(d.urgent?"🚨 ":"")+(d.demain?"demain ":"")+(d.heure==="maintenant"?"maint.":d.heure)+" · "+d.depart.split(",")[0]+" → "+d.arrivee.split(",")[0];
     var k=document.createElement("small");k.textContent=(i+1)+".";
     var x=document.createElement("button");x.type="button";x.textContent="✕";
     x.addEventListener("click",function(){tap();lot.splice(i,1);afficherLot();});
@@ -1239,6 +1248,7 @@ $("plus").addEventListener("click",function(){
   if(lot.length>=9){$("msg").textContent="10 courses maximum par envoi.";return;}
   tap();lot.push(d);$("msg").textContent="";
   $("depart").value="";$("arrivee").value="";$("commentaire").value="";$("hh").value="";$("mm").value="";
+  urgent=false;$("urgent").classList.remove("actif");
   if(demain){$("hh").focus();}else{majMaintenant(true);}   /* le jour reste celui de la course d'avant */
   afficherLot();window.scrollTo(0,0);
 });
@@ -1387,6 +1397,7 @@ def creer_course_depuis_formulaire(corps):
             heure = f"demain {heure}"
         a_publier.append({"uid": user["id"], "nom": nom_affiche(user), "heure": heure, "demain": demain,
                           "depart": depart, "arrivee": arrivee, "commentaire": commentaire, "chat": chat,
+                          "urgent": bool(x.get("urgent")),
                           "sans_tableau": True})
     with LOCK, dans(chat):
         lot = str(state["next_id"])
