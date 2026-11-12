@@ -831,9 +831,7 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
         cloturer(c, "trouvee")
         repondre_callback(cb_id, "C'est noté : prise ailleurs 🤝")
         return
-    if not deuxieme_appui(uid, "prendre", ref):
-        repondre_callback(cb_id, f"🚕 Prendre la course de {c['heure']} ? 👉 Touche encore pour la prendre")
-        return
+    # Les infos sont dans la bulle : un seul appui suffit pour prendre la course.
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
     c["pris_par_username"] = user.get("username")
     cloturer(c, "prise")
@@ -1110,10 +1108,12 @@ function suggestions(idInput,idListe){
     var n=sansAccents(q),res=[];
     if(n.length<2)return res;
     ETAB.forEach(function(e){
-      var ok=e[1].some(function(a){return a===n||(n.length>=2&&a.indexOf(n)===0);})
-        ||(n.length>=3&&sansAccents(e[0]).indexOf(n)>=0);
-      if(ok){var p=e[0].split(", ");res.push({texte:e[0],principal:p[0],lieu:p.slice(1).join(", ")});}
+      /* raccourci exact d'abord (« che »), puis début de raccourci, puis nom qui contient le texte */
+      var rang=e[1].indexOf(n)>=0?0:e[1].some(function(a){return a.indexOf(n)===0;})?1
+        :(n.length>=3&&sansAccents(e[0]).indexOf(n)>=0)?2:-1;
+      if(rang>=0){var p=e[0].split(", ");res.push({rang:rang,texte:e[0],principal:p[0],lieu:p.slice(1).join(", ")});}
     });
+    res.sort(function(x,y){return x.rang-y.rang;});
     return res.slice(0,3);
   }
   function afficher(features){
@@ -1161,23 +1161,26 @@ suggestions("arrivee","liste-arrivee");
 
 /* Raccourcis à l'écrit : taper « pasteur », « tzanck », « T2 »... en sortant du champ le remplace par le nom complet */
 var ETAB=[
- ["Hôpital Les Sources, Nice",["les sources","les sources b1","sources"]],
- ["Clinique Saint George, Nice",["saint george","saint georges","saint-george","saint-georges","csg","stg"]],
- ["Hôpital Pasteur, Nice",["pasteur","pasteur 2"]],
- ["Hôpital de l'Archet, Nice",["archet","archet 1","archet 2","l'archet"]],
- ["Hôpital Lenval, Nice",["lenval"]],
- ["Centre Antoine Lacassagne, Nice",["lacassagne","antoine lacassagne","cal"]],
+ ["Hôpital Pasteur 2, Nice",["pasteur","pasteur 2","p2","pst"]],
+ ["Hôpital de l'Archet, Nice",["archet","archet 1","archet 2","l'archet","arc","a1","a2"]],
+ ["Hôpital Lenval, Nice",["lenval","len"]],
+ ["Hôpital Saint-Roch, Nice",["saint roch","saint-roch","st roch","str"]],
+ ["Hôpital de Cimiez, Nice",["cimiez","cim"]],
+ ["Hôpital Les Sources, Nice",["les sources","les sources b1","sources","src"]],
+ ["Centre Antoine Lacassagne, Nice",["lacassagne","antoine lacassagne","cal","cac"]],
+ ["Clinique Saint-George, Nice",["saint george","saint georges","saint-george","saint-georges","st george","stg","csg"]],
  ["Clinique du Parc Impérial, Nice",["parc imperial","cpi"]],
- ["Clinique Saint-Antoine, Nice",["saint antoine","saint-antoine"]],
- ["Polyclinique Santa Maria, Nice",["santa maria"]],
- ["Clinique Saint-François, Nice",["saint francois","saint-francois"]],
- ["Hôpital Saint-Roch, Nice",["saint roch","saint-roch"]],
- ["Hôpital de Cimiez, Nice",["cimiez"]],
- ["Polyclinique Saint Jean, Cagnes-sur-Mer",["saint jean"]],
- ["Institut Arnault Tzanck, Saint-Laurent-du-Var",["tzanck","crc nice"]],
+ ["Clinique Saint-Antoine, Nice",["saint antoine","saint-antoine","st antoine","sta"]],
+ ["Clinique Saint-François, Nice",["saint francois","saint-francois","st francois","stf"]],
+ ["Centre de Haute Énergie (CHE), 10 boulevard Pasteur, Nice",["che","haute energie","centre haute energie"]],
+ ["Polyclinique Santa Maria, Nice",["santa maria","psm"]],
+ ["Polyclinique Saint-Jean, Cagnes-sur-Mer",["saint jean","st jean","stj"]],
+ ["Institut Arnault Tzanck, Saint-Laurent-du-Var",["tzanck","tz","iat","crc nice"]],
+ ["Centre Hospitalier Princesse Grace (CHPG), Monaco",["chpg","princesse grace"]],
  ["Aéroport Nice Côte d'Azur - Terminal 1",["t1","terminal 1"]],
  ["Aéroport Nice Côte d'Azur - Terminal 2",["t2","terminal 2"]],
- ["Aéroport Nice Côte d'Azur",["aeroport","aeroport de nice","aeroport nice"]]
+ ["Aéroport Nice Côte d'Azur",["aeroport","aeroport de nice","aeroport nice"]],
+ ["Gare de Nice-Ville",["gare","gare nice","gare de nice","thiers","sncf"]]
 ];
 function sansAccents(t){return t.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[’]/g,"'").toLowerCase().replace(/ +/g," ").trim();}
 function resoudre(v){
