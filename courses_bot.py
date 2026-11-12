@@ -570,7 +570,7 @@ def adresse_courte(a):
         mots.pop(0)
         while len(mots) > 1 and mots[0].lower() in PETITS_MOTS:
             mots.pop(0)
-    elif mots and mots[0].lower() in GENERIQUES and len(" ".join(mots)) > 16:
+    elif len(mots) > 1 and mots[0].lower() in GENERIQUES:
         mots.pop(0)
         while len(mots) > 1 and mots[0].lower() in PETITS_MOTS:
             mots.pop(0)
@@ -680,9 +680,9 @@ def bouton_tableau(n, c):
 def clavier_lot(lot, courses):
     seul = len(courses) == 1
     lignes = [[{"text": ligne_tableau(c), "callback_data": f"t:{c['id']}"}] for c in courses]
-    if any(c["statut"] == "open" for c in courses):
-        bas = [{"text": "🤝 Prise ailleurs", "callback_data": f"tann:{lot}"}]
-        if est_web():
+    if est_web() and any(c["statut"] == "open" for c in courses):
+        bas = []
+        if True:
             bas.insert(0, {"text": "↪️ EasyTaxi" if seul else "↪️ Libres → EasyTaxi", "callback_data": f"tall:{lot}"})
         lignes.append(bas)
     return {"inline_keyboard": lignes}
