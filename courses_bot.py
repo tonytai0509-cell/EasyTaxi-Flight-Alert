@@ -472,10 +472,14 @@ def texte_course(c):
             lignes.append(f"🤝 Trouvée en dehors de {echapper(NOM_GROUPE)}")
         elif copie["statut"] == "annulee":
             lignes.append(f"🗑 Annulée sur {echapper(NOM_GROUPE)}")
+        elif copie["statut"] == "arretee":
+            lignes.append(f"⏹ Arrêtée sur {echapper(NOM_GROUPE)}")
         elif copie["statut"] == "expiree":
             lignes.append(f"⌛ Personne ne l'a prise sur {echapper(NOM_GROUPE)}")
     elif statut == "annulee":
         lignes.append("🗑 <b>Course annulée</b>")
+    elif statut == "arretee":
+        lignes.append(f"⏹ <b>Arrêtée par {echapper(c.get('arretee_par', ''))}</b>")
     elif statut == "expiree":
         lignes.append("⌛ <b>Personne n'a pris cette course</b>")
     return "\n".join(lignes)
@@ -550,13 +554,18 @@ def cloturer(c, statut):
 def envoyer_rappel(c):
     supprimer(c.get("rappel_id"))
     c["dernier_rappel_ts"] = time.time()
+    c["nb_rappels"] = c.get("nb_rappels", 0) + 1
+    # 1er rappel discret ; à partir du 2e, une alerte plus visible.
+    titre = ("⏰ <b>Course toujours libre</b>" if c["nb_rappels"] == 1
+             else f"🚨 <b>ATTENTION · course toujours dans le besoin</b> ({c['nb_rappels']}e rappel)")
     c["rappel_id"] = envoyer(
-        f"⏰ <b>Course toujours libre</b> · {echapper(c['heure'])}\n"
+        f"{titre} · {echapper(c['heure'])}\n"
         f"{echapper(c['depart'])} → {echapper(c['arrivee'])}\n"
         f"<i>Donnée par {echapper(c['donneur_nom'])}</i>",
         reply_markup={"inline_keyboard": [[
             {"text": "✅ Accepter", "callback_data": f"acc:{c['id']}"},
             {"text": "❌ Refuser", "callback_data": f"ref:{c['id']}"},
+            {"text": "⏹ Stop", "callback_data": f"stop:{c['id']}"},
         ]]},
         reply_to=c["message_id"],
     )
@@ -1283,12 +1292,16 @@ def traiter_callback_groupe(cb, cb_id, user, uid, nom, msg):
             c["refus"][str(uid)] = nom
             repondre_callback(cb_id, "Refus enregistré.")
             maj_carte(c)
-    elif action in ("found", "cancel"):
-        if uid != c["donneur_id"]:
-            repondre_callback(cb_id, "Seul le donneur peut faire ça.", alerte=True)
+    elif action in ("found", "cancel", "stop"):
+        # Le donneur, ou un administrateur du groupe (course oubliée, donnée ailleurs…).
+        admin = uid != c["donneur_id"] and statut_membre(uid, groupe()).get("status") in ("creator", "administrator")
+        if uid != c["donneur_id"] and not admin:
+            repondre_callback(cb_id, "Seul le donneur ou un administrateur peut faire ça.", alerte=True)
             return
-        cloturer(c, "trouvee" if action == "found" else "annulee")
-        repondre_callback(cb_id, "C'est noté.")
+        if action == "stop":
+            c["arretee_par"] = nom
+        cloturer(c, {"found": "trouvee", "cancel": "annulee", "stop": "arretee"}[action])
+        repondre_callback(cb_id, "Course arrêtée, plus de rappels." if action == "stop" else "C'est noté.")
     else:
         repondre_callback(cb_id)
 
