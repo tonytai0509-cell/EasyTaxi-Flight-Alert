@@ -21,7 +21,7 @@ SEUIL_VIDE = 50.0
 
 # Raccourcis (même liste que le formulaire du site, js/etablissements.js) : [nom, raccourcis, adresse]
 ETABLISSEMENTS = [
-    ("Hôpital Pasteur 2", "pasteur p2 pst", "30 avenue de la Voie Romaine, 06000 Nice"),
+    ("Hôpital Pasteur 2", "pasteur p2 pst pasteur 2", "30 avenue de la Voie Romaine, 06000 Nice"),
     ("Hôpital de l'Archet", "archet arc a1 a2", "151 route Saint-Antoine de Ginestière, 06200 Nice"),
     ("Hôpital Lenval", "lenval len", "57 avenue de la Californie, 06200 Nice"),
     ("Hôpital Saint-Roch", "saint roch st roch str", "5 rue Pierre Dévoluy, 06000 Nice"),
@@ -37,10 +37,16 @@ ETABLISSEMENTS = [
     ("Centre de Haute Énergie (CHE)", "che haute energie centre haute energie", "10 boulevard Pasteur, 06000 Nice"),
     ("Polyclinique Santa Maria", "santa maria psm", "57 avenue de la Californie, 06200 Nice"),
     ("Polyclinique Saint-Jean", "saint jean st jean stj", "92 avenue du Docteur Maurice Donat, 06800 Cagnes-sur-Mer"),
-    ("Institut Arnault Tzanck", "tzanck tz iat", "231 avenue du Docteur Maurice Donat, 06721 Saint-Laurent-du-Var"),
+    ("Institut Arnault Tzanck", "tzanck tz iat iat st lo iat saint laurent iat slv", "231 avenue du Docteur Maurice Donat, 06721 Saint-Laurent-du-Var"),
     ("Aéroport Nice - Terminal 1", "aeroport t1", "Boulevard Maryse Bastié, 06200 Nice"),
     ("Aéroport Nice - Terminal 2", "aeroport t2", "Boulevard Jacqueline Auriol, 06200 Nice"),
     ("Gare de Nice-Ville", "gare gare nice", "Avenue Thiers, 06000 Nice"),
+    # Raccourcis précis (cal a, iat mougins...) après les généraux (cal, iat), qui restent prioritaires.
+    ("Hôpital Pasteur 1", "pasteur 1 p1", "30 avenue de la Voie Romaine, 06000 Nice"),
+    ("Centre Antoine Lacassagne (bâtiment A)", "cal a lacassagne a", "33 avenue de Valombrose, 06189 Nice"),
+    ("Centre Antoine Lacassagne (bâtiment B)", "cal b lacassagne b", "33 avenue de Valombrose, 06189 Nice"),
+    ("Hôpital Privé Arnault Tzanck Mougins", "iat mougins tzanck mougins", "122 avenue du Docteur Maurice Donat, 06250 Mougins"),
+    ("Hôpital Sainte-Marie", "ste marie sainte marie st marie", "87 avenue Joseph Raybaud, Nice"),
 ]
 
 OPTIONS = {
