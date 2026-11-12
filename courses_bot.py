@@ -31,6 +31,7 @@ import html
 import json
 import logging
 import os
+import random
 import re
 import contextlib
 import contextvars
@@ -634,7 +635,7 @@ def bloc_tableau(n, c, complet=True):
 def pastille(c):
     s, copie = c["statut"], copie_de(c)
     if s == "open":
-        return "🔴" if c.get("urgent") else "🟢"
+        return "🔴" if c.get("urgent") else "🎲" if c.get("tirage") else "🟢"
     if s == "prise" or (s == "transferee" and copie and copie["statut"] == "prise"):
         return "✅"
     if s == "transferee":
@@ -657,7 +658,15 @@ def ligne_bulle(c):
     elif s in ("trouvee", "annulee", "arretee", "expiree"):
         extra.append({"trouvee": "prise ailleurs", "annulee": "annulée", "arretee": "arrêtée",
                       "expiree": "personne ne l'a prise"}[s])
-    return t + " <i>· " + " · ".join(extra) + "</i>"
+    t += " <i>· " + " · ".join(extra) + "</i>"
+    if s == "open" and c.get("tirage"):
+        noms = ", ".join(echapper(i["nom"].split()[0]) for i in c.get("inscrits", {}).values())
+        if c.get("tirage_fin"):
+            fin = datetime.fromtimestamp(c["tirage_fin"], TZ).strftime("%Hh%M")
+            t += f"\n🎲 <b>Tirage à {fin}</b> · {noms}"
+        else:
+            t += "\n🎲 <b>Tirage au sort</b> : inscris-toi, le dé tranche 2 min après le 1er inscrit"
+    return t
 
 
 def texte_lot(courses):
@@ -683,6 +692,9 @@ def bouton_action(c, avec_lien=True, avec_style=True):
     """Bouton sous la bulle : « Je la prends », puis « 💬 Prénom » (conversation privée) une fois prise."""
     s, copie = c["statut"], copie_de(c)
     cb = f"t:{c['id']}"
+    if s == "open" and c.get("tirage"):
+        n = len(c.get("inscrits", {}))
+        return {"text": f"🎲 Je participe{f' ({n})' if n else ''}", "callback_data": cb}
     if s == "open":
         b = {"text": f"{pastille(c)} Je la prends", "callback_data": cb}
         if avec_style and c.get("urgent"):
@@ -839,6 +851,25 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
         cloturer(c, "trouvee")
         repondre_callback(cb_id, "🤝 Prise ailleurs. Retouche le bouton pour la remettre.")
         return
+    if c.get("tirage"):
+        # Tirage : un appui inscrit, un 2e désinscrit ; le dé tranche 2 min après le 1er inscrit.
+        if c.get("tirage_gagnant"):
+            repondre_callback(cb_id, "🎲 Le dé roule déjà !")
+            return
+        ins = c.setdefault("inscrits", {})
+        if str(uid) in ins:
+            del ins[str(uid)]
+            repondre_callback(cb_id, "Tu n'es plus inscrit au tirage.")
+        else:
+            ins[str(uid)] = {"nom": nom, "username": user.get("username")}
+            c.setdefault("tirage_fin", None)
+            if not c["tirage_fin"]:
+                c["tirage_fin"] = time.time() + TIRAGE_SECONDES
+            repondre_callback(cb_id, "🎲 Inscrit au tirage ! Retouche pour te désinscrire.")
+        if not ins:
+            c["tirage_fin"] = None
+        maj_carte(c)
+        return
     # Les infos sont dans la bulle : un seul appui suffit pour prendre la course.
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
     c["pris_par_username"] = user.get("username")
@@ -898,6 +929,8 @@ def _publier_course(w):
         "demain": bool(w.get("demain")),
         "urgent": bool(w.get("urgent")),
         "retour_de": w.get("retour_de"),
+        "tirage": bool(w.get("tirage")),
+        "inscrits": {},
         "poste_a": datetime.now(TZ).strftime("%H:%M"),
         "cree_ts": time.time(),
         "dernier_rappel_ts": time.time(),
@@ -1016,6 +1049,9 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .envoyer:disabled{opacity:.55}
 .urgent{width:100%;margin-top:22px;padding:13px;font:700 16px "Poppins",-apple-system,Roboto,sans-serif;border:2px solid #e5484d;border-radius:14px;background:transparent;color:#e5484d}
 .urgent.actif{background:#e5484d;color:#fff}
+.options{display:flex;gap:10px}.options button{flex:1}
+.tirage{width:100%;margin-top:22px;padding:13px;font:700 16px "Poppins",-apple-system,Roboto,sans-serif;border:2px solid #8b5cf6;border-radius:14px;background:transparent;color:#8b5cf6}
+.tirage.actif{background:#8b5cf6;color:#fff}
 .ajouter{display:none;width:100%;margin-top:22px;padding:14px;font:600 16px "Poppins",-apple-system,Roboto,sans-serif;border:2px dashed var(--line);border-radius:14px;background:transparent;color:var(--btn)}
 .lot{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:14px;font-weight:500}
 .lot span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lot small{color:var(--hint);font-weight:600}
@@ -1053,7 +1089,7 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 <label for="commentaire">Commentaire (facultatif)</label>
 <input id="commentaire" placeholder="Ex : 2 passagers, bagages" autocomplete="off" maxlength="120">
 
-<button class="urgent" id="urgent" type="button">🚨 Urgent</button>
+<div class="options"><button class="urgent" id="urgent" type="button">🚨 Urgent</button><button class="tirage" id="tirage" type="button">🎲 Tirage</button></div>
 <button class="ajouter" id="plus" type="button">＋ Ajouter une course</button>
 <button class="envoyer" id="ok" type="button">Envoyer au groupe</button>
 <div id="msg"></div>
@@ -1252,10 +1288,11 @@ micro("depart");micro("arrivee");
 
 /* Envoi (Easy Web : plusieurs courses d'un coup avec « Ajouter une course ») */
 var WEB=false;try{WEB=(tg.initDataUnsafe||{}).start_param==="web";}catch(e){}
-var lot=[],urgent=false;
+var lot=[],urgent=false,tirage=false;
+$("tirage").addEventListener("click",function(){tap();tirage=!tirage;$("tirage").classList.toggle("actif",tirage);});
 $("urgent").addEventListener("click",function(){tap();urgent=!urgent;$("urgent").classList.toggle("actif",urgent);});
 function courante(){
-  var d={urgent:urgent,demain:demain,heure:maintenant?"maintenant":getHeure(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
+  var d={urgent:urgent,tirage:tirage,demain:demain,heure:maintenant?"maintenant":getHeure(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
   d.depart=resoudre(d.depart)||d.depart;d.arrivee=resoudre(d.arrivee)||d.arrivee;
   return d;
 }
@@ -1274,7 +1311,7 @@ function afficherLot(){
   lot.forEach(function(d,i){
     var r=document.createElement("div");r.className="lot";
     var s=document.createElement("span");
-    s.textContent=(d.urgent?"🚨 ":"")+(d.demain?"demain ":"")+(d.heure==="maintenant"?"maint.":d.heure)+" · "+d.depart.split(",")[0]+" → "+d.arrivee.split(",")[0];
+    s.textContent=(d.urgent?"🚨 ":"")+(d.tirage?"🎲 ":"")+(d.demain?"demain ":"")+(d.heure==="maintenant"?"maint.":d.heure)+" · "+d.depart.split(",")[0]+" → "+d.arrivee.split(",")[0];
     var k=document.createElement("small");k.textContent=(i+1)+".";
     var x=document.createElement("button");x.type="button";x.textContent="✕";
     x.addEventListener("click",function(){tap();lot.splice(i,1);afficherLot();});
@@ -1290,7 +1327,7 @@ $("plus").addEventListener("click",function(){
   if(lot.length>=9){$("msg").textContent="10 courses maximum par envoi.";return;}
   tap();lot.push(d);$("msg").textContent="";
   $("depart").value="";$("arrivee").value="";$("commentaire").value="";$("hh").value="";$("mm").value="";
-  urgent=false;$("urgent").classList.remove("actif");
+  urgent=false;$("urgent").classList.remove("actif");tirage=false;$("tirage").classList.remove("actif");
   if(demain){$("hh").focus();}else{majMaintenant(true);}   /* le jour reste celui de la course d'avant */
   afficherLot();window.scrollTo(0,0);
 });
@@ -1473,7 +1510,7 @@ def creer_course_depuis_formulaire(corps):
             heure = f"demain {heure}"
         a_publier.append({"uid": user["id"], "nom": nom_affiche(user), "heure": heure, "demain": demain,
                           "depart": depart, "arrivee": arrivee, "commentaire": commentaire, "chat": chat,
-                          "urgent": bool(x.get("urgent")),
+                          "urgent": bool(x.get("urgent")), "tirage": bool(x.get("tirage")),
                           "sans_tableau": True})
     with LOCK, dans(chat):
         # Une petite bulle par course, l'une après l'autre ; seule la 1re fait sonner.
@@ -1681,6 +1718,67 @@ def traiter_callback(cb):
         traiter_callback_groupe(cb, cb_id, user, uid, nom, msg)
 
 
+TIRAGE_SECONDES = 120
+
+
+def lancer_tirage(c, now):
+    """Fin des inscriptions : 1 inscrit = il l'a ; sinon le dé animé de Telegram choisit."""
+    ins = list(c.get("inscrits", {}).items())
+    if not ins:
+        c["tirage_fin"] = None
+        return
+    if len(ins) == 1:
+        attribuer_tirage(c, ins[0])
+        return
+    n = len(ins)
+    msgs = []
+    if n <= 6:
+        # Chacun sa part des 6 faces ; si 6 ne se partage pas (4, 5), une face par personne et on relance au-delà.
+        part = 6 // n if 6 % n == 0 else 1
+        noms = " · ".join(f"{i[1]['nom'].split()[0]} {k * part + 1}" + (f"-{(k + 1) * part}" if part > 1 else "")
+                          for k, i in enumerate(ins))
+        msgs.append(envoyer(f"🎲 <b>Tirage {echapper(c['heure'])}</b> : {echapper(noms)}", silencieux=True))
+        gagnant = None
+        for _ in range(6):
+            d = api("sendDice", chat_id=groupe(), emoji="🎲", disable_notification=True)
+            r = d.get("result") or {}
+            msgs.append(r.get("message_id"))
+            v = (r.get("dice") or {}).get("value")
+            if not v:
+                break
+            if (v - 1) // part < n:
+                gagnant = ins[(v - 1) // part]
+                break
+        c["tirage_valeur"] = v
+    else:
+        gagnant = None
+    if not gagnant:
+        gagnant = random.SystemRandom().choice(ins)
+        c["tirage_valeur"] = None
+    c["tirage_gagnant"] = gagnant[0]
+    c["tirage_annonce"] = now + 4   # le temps que le dé finisse de rouler
+    c["tirage_msgs"] = [m for m in msgs if m]
+
+
+def attribuer_tirage(c, inscrit):
+    uid, i = inscrit
+    c["pris_par_id"], c["pris_par_nom"], c["pris_par_username"] = int(uid), i["nom"], i.get("username")
+    cloturer(c, "prise")
+
+
+def annoncer_tirage(c, now):
+    uid = c["tirage_gagnant"]
+    i = c["inscrits"].get(uid) or {"nom": "?"}
+    v = c.get("tirage_valeur")
+    autres = [x["nom"].split()[0] for k, x in c["inscrits"].items() if k != uid]
+    texte = (f"🎲 {f'<b>{v}</b> → ' if v else ''}<b>{echapper(i['nom'])}</b> gagne la course de {echapper(c['heure'])} ! 🎉"
+             + (f"\n<i>Désolé {echapper(', '.join(autres))}, la prochaine sera la bonne 😉</i>" if autres else ""))
+    c["tirage_msgs"].append(envoyer(texte))
+    c["tirage_suppr"] = now + 60
+    c["tirage_annonce"] = None
+    attribuer_tirage(c, (uid, i))
+
+
 def faire_retour(c, user, admin_ok=False):
     """Publie tout de suite la course inverse, en « maintenant ». Retourne (ok, message)."""
     uid = user["id"]
@@ -1733,7 +1831,7 @@ def transferer(c, user, sans_tableau=False, lot=None, silencieux=False):
     w = {"uid": user["id"], "nom": nom_affiche(user), "heure": c["heure"], "demain": c.get("demain"),
          "depart": c["depart"], "arrivee": c["arrivee"], "commentaire": c.get("commentaire", ""),
          "chat": CHAT_ID, "source": c["id"], "sans_tableau": sans_tableau, "lot": lot, "silencieux": silencieux,
-         "urgent": c.get("urgent")}
+         "urgent": c.get("urgent"), "tirage": c.get("tirage")}
     copie = publier_course(w)
     if not copie:
         return False
@@ -1889,8 +1987,22 @@ def maintenance():
 def entretenir_course(cid, c, now):
     change = False
     if not c.get("message_id"):
+        # Tirage au sort : fin des inscriptions, annonce, puis on efface le dé.
+        if c["statut"] == "open" and c.get("tirage") and c.get("tirage_fin") and not c.get("tirage_gagnant") \
+                and now >= c["tirage_fin"]:
+            lancer_tirage(c, now)
+            return True
+        if c.get("tirage_annonce") and now >= c["tirage_annonce"]:
+            annoncer_tirage(c, now)
+            return True
+        if c.get("tirage_suppr") and now >= c["tirage_suppr"]:
+            for m in c.get("tirage_msgs", []):
+                supprimer(m)
+            c["tirage_suppr"], c["tirage_msgs"] = None, []
+            change = True
         # Message par envoi : pas de rappels ; on oublie les courses au bout de 7 jours.
-        if c["statut"] == "open" and now - c["cree_ts"] > (36 * 3600 if c.get("demain") else EXPIRATION_MINUTES * 60):
+        if c["statut"] == "open" and not c.get("tirage_gagnant") and \
+                now - c["cree_ts"] > (36 * 3600 if c.get("demain") else EXPIRATION_MINUTES * 60):
             cloturer(c, "expiree")
             return True
         if c["statut"] != "open" and now - c["cree_ts"] > CONSERVATION_JOURS * 86400:
