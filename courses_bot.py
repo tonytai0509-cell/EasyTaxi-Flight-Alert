@@ -640,8 +640,8 @@ def texte_lot(courses):
             donneurs.append(c["donneur_nom"])
     qui = echapper(", ".join(donneurs))
     if len(courses) == 1:
-        return f"🚕 <b>Course de {qui}</b> · touche la ligne pour la prendre"
-    return f"🚕 <b>{len(courses)} courses de {qui}</b> · touche une ligne pour la prendre"
+        return f"🚕 <b>Course de {qui}</b>"
+    return f"🚕 <b>{len(courses)} courses de {qui}</b>"
 
 
 def ligne_tableau(c):
