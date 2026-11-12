@@ -691,14 +691,14 @@ def clavier_lot(lot, courses, avec_lien=True):
     seul = len(courses) == 1
     lignes = [[bouton_ligne(c, avec_lien)] for c in courses]
     libres = [c for c in courses if c["statut"] == "open"]
-    if libres:
-        # Copier pour coller dans un autre groupe : un bouton par course libre (repérée par son heure).
-        copies = [{"text": "⧉ Copier" if len(libres) == 1 else f"⧉ {c['heure'].replace('demain ', '')}",
-                   "copy_text": {"text": texte_copie(c)}} for c in libres]
+    if courses:
+        # Copier pour coller dans un autre groupe : un bouton par course, même prise (repérée par son heure).
+        copies = [{"text": "⧉ Copier" if len(courses) == 1 else f"⧉ {c['heure'].replace('demain ', '')}",
+                   "copy_text": {"text": texte_copie(c)}} for c in courses]
         lignes += [copies[i:i + 3] for i in range(0, len(copies), 3)]
     if est_web() and libres:
         et = {"text": "↪️ EasyTaxi" if len(libres) == 1 else "↪️ Libres → EasyTaxi", "callback_data": f"tall:{lot}"}
-        if len(libres) == 1:
+        if len(courses) == 1:
             lignes[-1].append(et)   # « ⧉ Copier » et « ↪️ EasyTaxi » sur la même ligne
         else:
             lignes.append([et])
