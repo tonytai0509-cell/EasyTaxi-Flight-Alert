@@ -814,7 +814,8 @@ def _publier_course(w):
     if est_web():
         # Easy Web : pas de carte, une ligne de plus sur le tableau (remis en bas du groupe).
         state["courses"][cid] = c
-        maj_tableau(reposter=True)
+        if not w.get("sans_tableau"):
+            maj_tableau(reposter=True)
         return c
     mid = envoyer(texte_course(c), reply_markup=clavier_course(c))
     if not mid:
@@ -914,10 +915,15 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .liste div:active{background:var(--card)}
 .envoyer{width:100%;margin-top:30px;padding:17px;font:600 18px "Poppins",-apple-system,Roboto,sans-serif;border:0;border-radius:14px;background:var(--btn);color:var(--btnfg)}
 .envoyer:disabled{opacity:.55}
+.ajouter{display:none;width:100%;margin-top:22px;padding:14px;font:600 16px "Poppins",-apple-system,Roboto,sans-serif;border:2px dashed var(--line);border-radius:14px;background:transparent;color:var(--btn)}
+.lot{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:14px;font-weight:500}
+.lot span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lot small{color:var(--hint);font-weight:600}
+.lot button{border:0;background:transparent;color:var(--hint);font-size:18px;padding:0 4px}
 #msg{margin-top:14px;color:#e5484d;min-height:22px;font-size:15px;text-align:center}
 </style></head><body>
 <h1>Donner une course</h1>
 <div class="trait"></div>
+<div id="lot"></div>
 
 <label for="hh">Heure</label>
 <div class="ligne">
@@ -935,6 +941,7 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 <label for="commentaire">Commentaire (facultatif)</label>
 <input id="commentaire" placeholder="Ex : 2 passagers, bagages" autocomplete="off" maxlength="120">
 
+<button class="ajouter" id="plus" type="button">＋ Ajouter une course</button>
 <button class="envoyer" id="ok" type="button">Envoyer au groupe</button>
 <div id="msg"></div>
 
@@ -1114,21 +1121,61 @@ function micro(id){
 }
 micro("depart");micro("arrivee");
 
-/* Envoi */
-function envoyer(){
+/* Envoi (Easy Web : plusieurs courses d'un coup avec « Ajouter une course ») */
+var WEB=false;try{WEB=(tg.initDataUnsafe||{}).start_param==="web";}catch(e){}
+var lot=[];
+function courante(){
   var d={demain:demain,heure:maintenant?"maintenant":getHeure(),depart:$("depart").value.trim(),arrivee:$("arrivee").value.trim(),commentaire:$("commentaire").value.trim()};
   d.depart=resoudre(d.depart)||d.depart;d.arrivee=resoudre(d.arrivee)||d.arrivee;
-  if(demain&&!getHeure()){$("msg").textContent="Choisis l'heure de demain.";return;}
-  if(!d.heure||!d.depart||!d.arrivee){$("msg").textContent="Remplis l'heure, le départ et l'arrivée.";return;}
+  return d;
+}
+function vide(d){return !d.depart&&!d.arrivee&&!d.commentaire&&(maintenant||!getHeure());}
+function verifier(d){
+  if(demain&&!getHeure()){$("msg").textContent="Choisis l'heure de demain.";return false;}
+  if(!d.heure||!d.depart||!d.arrivee){$("msg").textContent="Remplis l'heure, le départ et l'arrivée.";return false;}
+  return true;
+}
+function libelleOk(){
+  var n=lot.length+(vide(courante())?0:1);
+  $("ok").textContent=n>1?"Envoyer les "+n+" courses":"Envoyer au groupe";
+}
+function afficherLot(){
+  var z=$("lot");z.innerHTML="";
+  lot.forEach(function(d,i){
+    var r=document.createElement("div");r.className="lot";
+    var s=document.createElement("span");
+    s.textContent=(d.demain?"demain ":"")+(d.heure==="maintenant"?"maint.":d.heure)+" · "+d.depart.split(",")[0]+" → "+d.arrivee.split(",")[0];
+    var k=document.createElement("small");k.textContent=(i+1)+".";
+    var x=document.createElement("button");x.type="button";x.textContent="✕";
+    x.addEventListener("click",function(){tap();lot.splice(i,1);afficherLot();});
+    r.appendChild(k);r.appendChild(s);r.appendChild(x);z.appendChild(r);
+  });
+  libelleOk();
+}
+if(WEB){$("plus").style.display="block";}
+["depart","arrivee","commentaire","hh","mm"].forEach(function(id){$(id).addEventListener("input",libelleOk);});
+$("plus").addEventListener("click",function(){
+  var d=courante();
+  if(!verifier(d))return;
+  if(lot.length>=9){$("msg").textContent="10 courses maximum par envoi.";return;}
+  tap();lot.push(d);$("msg").textContent="";
+  $("depart").value="";$("arrivee").value="";$("commentaire").value="";$("hh").value="";$("mm").value="";
+  if(demain){$("hh").focus();}else{majMaintenant(true);}   /* le jour reste celui de la course d'avant */
+  afficherLot();window.scrollTo(0,0);
+});
+function envoyer(){
+  var d=courante(),liste=lot.slice();
+  if(!(liste.length&&vide(d))){if(!verifier(d))return;liste.push(d);}
   $("ok").disabled=true;$("ok").textContent="Envoi…";$("msg").textContent="";
-  d.initData=tg.initData;
-  fetch("/api/course",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})
+  var corps=liste.length>1?{courses:liste}:liste[0];
+  corps.initData=tg.initData;
+  fetch("/api/course",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(corps)})
     .then(function(r){return r.json();})
     .then(function(j){
       if(j.ok){try{tg.HapticFeedback.notificationOccurred("success");}catch(e){}tg.close();setTimeout(function(){tg.close();},400);}
-      else{$("msg").textContent=j.erreur||"Erreur, réessaie.";$("ok").disabled=false;$("ok").textContent="Envoyer au groupe";}
+      else{$("msg").textContent=j.erreur||"Erreur, réessaie.";$("ok").disabled=false;libelleOk();}
     })
-    .catch(function(){$("msg").textContent="Pas de connexion, réessaie.";$("ok").disabled=false;$("ok").textContent="Envoyer au groupe";});
+    .catch(function(){$("msg").textContent="Pas de connexion, réessaie.";$("ok").disabled=false;libelleOk();});
 }
 $("ok").addEventListener("click",envoyer);
 /* Fermeture automatique après 2 min d'inactivité (évite la barre « Dispatch » oubliée en bas) */
@@ -1238,22 +1285,35 @@ def creer_course_depuis_formulaire(corps):
     chat = WEB_CHAT_ID if (user.get("_start") == "web" and WEB_CHAT_ID) else CHAT_ID
     if not membre_de(user["id"], chat):
         return 403, {"ok": False, "erreur": "Réservé aux membres du groupe."}
-    heure = nettoyer_champ(str(corps.get("heure", "")))
-    depart = nettoyer_champ(str(corps.get("depart", "")))
-    arrivee = nettoyer_champ(str(corps.get("arrivee", "")))
-    commentaire = nettoyer_champ(str(corps.get("commentaire", "")))
-    if not (heure and depart and arrivee):
-        return 400, {"ok": False, "erreur": "Remplis l'heure, le départ et l'arrivée."}
-    demain = bool(corps.get("demain"))
-    if demain and heure.lower() == "maintenant":
-        return 400, {"ok": False, "erreur": "Choisis l'heure de demain."}
-    heure = normaliser_heure(heure)
-    if demain:
-        heure = f"demain {heure}"
-    w = {"uid": user["id"], "nom": nom_affiche(user), "heure": heure, "demain": demain,
-         "depart": depart, "arrivee": arrivee, "commentaire": commentaire, "chat": chat}
+    # Plusieurs courses d'un coup (formulaire Easy Web) : « courses » = liste ; sinon une seule.
+    lot = corps.get("courses") if isinstance(corps.get("courses"), list) else [corps]
+    if not lot or len(lot) > 10:
+        return 400, {"ok": False, "erreur": "Entre 1 et 10 courses par envoi."}
+    a_publier = []
+    for i, x in enumerate(lot, 1):
+        x = x if isinstance(x, dict) else {}
+        n = f"Course {i} : " if len(lot) > 1 else ""
+        err = lambda t: (400, {"ok": False, "erreur": (n + t) if n else t[0].upper() + t[1:]})
+        heure = nettoyer_champ(str(x.get("heure", "")))
+        depart = nettoyer_champ(str(x.get("depart", "")))
+        arrivee = nettoyer_champ(str(x.get("arrivee", "")))
+        commentaire = nettoyer_champ(str(x.get("commentaire", "")))
+        if not (heure and depart and arrivee):
+            return err("remplis l'heure, le départ et l'arrivée.")
+        demain = bool(x.get("demain"))
+        if demain and heure.lower() == "maintenant":
+            return err("choisis l'heure de demain.")
+        heure = normaliser_heure(heure)
+        if demain:
+            heure = f"demain {heure}"
+        a_publier.append({"uid": user["id"], "nom": nom_affiche(user), "heure": heure, "demain": demain,
+                          "depart": depart, "arrivee": arrivee, "commentaire": commentaire, "chat": chat,
+                          "sans_tableau": True})
     with LOCK, dans(chat):
-        publier_course(w)
+        for w in a_publier:
+            publier_course(w)
+        if est_web():
+            maj_tableau(reposter=True)   # une seule notification pour tout le lot
         retirer_invitation(user["id"])
         retirer_libre(user["id"])
         sauver_etat()
@@ -1302,7 +1362,7 @@ class FormulaireHandler(BaseHTTPRequestHandler):
             return
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            if n <= 0 or n > 10000:
+            if n <= 0 or n > 20000:
                 raise ValueError
             corps = json.loads(self.rfile.read(n).decode("utf-8"))
             code, rep_ = creer_course_depuis_formulaire(corps)
