@@ -743,6 +743,18 @@ def detail_course(c):
     return "\n".join(l)
 
 
+def bandeau(cb_id, titre, c, pied):
+    """1er appui : petit bandeau qui disparaît seul (pas de « OK » à toucher, la ligne reste disponible)."""
+    det = f"{c['heure']} · {c['depart']} → {c['arrivee']}"
+    if c.get("commentaire"):
+        det += f" · {c['commentaire']}"
+    det = re.sub(r"\b\d{5}\s+", "", det) + f" · {c['donneur_nom']}"
+    place = 200 - len(titre) - len(pied) - 2
+    if len(det) > place:
+        det = det[:max(0, place - 1)] + "…"
+    repondre_callback(cb_id, f"{titre} {det}\n{pied}")
+
+
 def fiche(titre, c, pied=""):
     """Fenêtre d'une course (200 caractères max) : on raccourcit le détail, jamais le titre ni la consigne."""
     place = 200 - len(titre) - len(pied) - 4
@@ -816,15 +828,14 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
     annuler = uid == c["donneur_id"] or (time.time() - _mode_annuler.get(uid, 0) < ANNULATION_SECONDES and est_admin(uid))
     if annuler:
         if not deuxieme_appui(uid, "ann", ref):
-            alerte(cb_id, fiche("🤝 Ta course a été prise ailleurs ?", c,
-                                "👉 Touche encore la ligne (10 s) pour la retirer."))
+            bandeau(cb_id, "🤝 Prise ailleurs ?", c, "👉 Touche encore pour la retirer")
             return
         _mode_annuler.pop(uid, None)
         cloturer(c, "trouvee")
         repondre_callback(cb_id, "C'est noté : prise ailleurs 🤝")
         return
     if not deuxieme_appui(uid, "prendre", ref):
-        alerte(cb_id, fiche("🚕 Prendre cette course ?", c, "👉 Touche encore la ligne (10 s) pour la prendre."))
+        bandeau(cb_id, "🚕 Prendre ?", c, "👉 Touche encore pour la prendre")
         return
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
     c["pris_par_username"] = user.get("username")
