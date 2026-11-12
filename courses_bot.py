@@ -677,9 +677,19 @@ def bouton_tableau(n, c):
     return {"text": t, "callback_data": f"t:{c['id']}"}
 
 
-def clavier_lot(lot, courses):
+def bouton_ligne(c, avec_lien=True):
+    """Ligne d'une course. Prise : la ligne ouvre la conversation privée avec le chauffeur."""
+    b = {"text": ligne_tableau(c), "callback_data": f"t:{c['id']}"}
+    pris = c if c["statut"] == "prise" else copie_de(c) if c["statut"] == "transferee" else None
+    ecrire = bouton_ecrire(pris) if (avec_lien and pris) else None
+    if ecrire:
+        b = {"text": b["text"].replace("✔️", "💬", 1), "url": ecrire["url"]}
+    return b
+
+
+def clavier_lot(lot, courses, avec_lien=True):
     seul = len(courses) == 1
-    lignes = [[{"text": ligne_tableau(c), "callback_data": f"t:{c['id']}"}] for c in courses]
+    lignes = [[bouton_ligne(c, avec_lien)] for c in courses]
     if est_web() and any(c["statut"] == "open" for c in courses):
         bas = []
         if True:
@@ -698,12 +708,20 @@ def maj_lot(lot, nouveau=False, silencieux=False):
     if not courses:
         return
     info = state.setdefault("lots", {}).setdefault(lot, {"chat": str(groupe()), "mid": None})
-    texte, clavier = texte_lot(courses), clavier_lot(lot, courses)
-    if info.get("mid") and not nouveau:
-        api("editMessageText", chat_id=info["chat"], message_id=info["mid"], text=texte, parse_mode="HTML",
-            reply_markup=clavier, link_preview_options={"is_disabled": True})
-        return
-    info["mid"] = envoyer(texte, reply_markup=clavier, silencieux=silencieux)
+    texte = texte_lot(courses)
+    for avec_lien in (True, False):
+        # Profil privé sans nom d'utilisateur : Telegram refuse le lien, on remet la ligne simple.
+        clavier = clavier_lot(lot, courses, avec_lien)
+        if info.get("mid") and not nouveau:
+            d = api("editMessageText", chat_id=info["chat"], message_id=info["mid"], text=texte, parse_mode="HTML",
+                    reply_markup=clavier, link_preview_options={"is_disabled": True})
+            if d.get("ok") or "not modified" in str(d.get("description", "")):
+                return
+        else:
+            mid = envoyer(texte, reply_markup=clavier, silencieux=silencieux)
+            if mid:
+                info["mid"] = mid
+                return
 
 
 def detail_course(c):
