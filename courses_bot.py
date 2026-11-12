@@ -630,14 +630,66 @@ def echapper_rien(t):
     return str(t or "")
 
 
+def statut_tableau(c):
+    """Dernière ligne d'une course du tableau (vide si elle est libre)."""
+    s, copie = c["statut"], copie_de(c)
+    def pris(x):
+        return mention(x["pris_par_id"], x["pris_par_nom"]) if x.get("pris_par_id") else echapper(x.get("pris_par_nom") or "")
+    if s == "prise":
+        return f"✅ <b>Prise par {pris(c)}</b>"
+    if s == "transferee":
+        if copie and copie["statut"] == "prise":
+            return f"✅ <b>Prise par {pris(copie)} · {echapper(NOM_GROUPE)}</b>"
+        if copie and copie["statut"] == "open":
+            return f"↪️ En attente sur {echapper(NOM_GROUPE)}"
+        return f"⌛ Fermée sur {echapper(NOM_GROUPE)}"
+    return {"open": "", "trouvee": "🤝 <b>Prise ailleurs</b>", "annulee": "🗑 <b>Annulée</b>",
+            "arretee": "⏹ <b>Arrêtée</b>", "expiree": "⌛ <b>Personne ne l'a prise</b>"}.get(s, "")
+
+
+def bloc_tableau(n, c, complet=True):
+    l = [f"<b>{n} · {echapper(c['heure'])}</b> · <i>{echapper(c['donneur_nom'])}</i>"]
+    if complet:
+        l += [f"📍 {adresse_cliquable(c['depart'])}", f"🏁 {adresse_cliquable(c['arrivee'])}"]
+        if c.get("commentaire"):
+            l.append(f"💬 {echapper(c['commentaire'])}")
+    else:
+        l[0] += f" · {echapper(adresse_courte(c['depart']))} → {echapper(adresse_courte(c['arrivee']))}"
+    st = statut_tableau(c)
+    if st:
+        l.append(st)
+    return "\n".join(l)
+
+
 def texte_tableau(courses):
     if not courses:
         return "🚕 <b>Courses à prendre</b> · aucune pour le moment"
-    return "🚕 <b>Courses à prendre</b> · touche une ligne pour la prendre"
+    blocs = [bloc_tableau(i, c) for i, c in enumerate(courses, 1)]
+    texte = "🚕 <b>Courses à prendre</b>\n\n" + "\n\n".join(blocs)
+    if len(texte) > 3900:
+        # Trop long pour un message : les courses fermées passent sur une seule ligne.
+        blocs = [bloc_tableau(i, c, complet=(c["statut"] == "open")) for i, c in enumerate(courses, 1)]
+        texte = "🚕 <b>Courses à prendre</b>\n\n" + "\n\n".join(blocs)
+    return texte[:4096]
+
+
+def bouton_tableau(n, c):
+    s, copie = c["statut"], copie_de(c)
+    if s == "open":
+        t = f"✅ Prendre {n}"
+    elif s == "prise":
+        t = f"✔️ {n} {prenom(c['pris_par_nom'])}"
+    elif s == "transferee":
+        t = (f"✔️ {n} {prenom(copie['pris_par_nom'])}" if copie and copie["statut"] == "prise"
+             else f"↪️ {n} ET" if copie and copie["statut"] == "open" else f"⌛ {n} ET")
+    else:
+        t = {"trouvee": "🤝", "annulee": "🗑", "arretee": "⏹", "expiree": "⌛"}.get(s, "•") + f" {n}"
+    return {"text": t, "callback_data": f"t:{c['id']}"}
 
 
 def clavier_tableau(courses):
-    lignes = [[{"text": ligne_tableau(c), "callback_data": f"t:{c['id']}"}] for c in courses]
+    boutons = [bouton_tableau(i, c) for i, c in enumerate(courses, 1)]
+    lignes = [boutons[i:i + 3] for i in range(0, len(boutons), 3)]
     if any(c["statut"] == "open" for c in courses):
         bas = [{"text": "🤝 Prise ailleurs", "callback_data": "tann:"}]
         if est_web():
@@ -660,7 +712,7 @@ def maj_tableau(reposter=False):
     ancien = tab.get(groupe())
     if ancien and not reposter:
         d = api("editMessageText", chat_id=groupe(), message_id=ancien, text=texte, parse_mode="HTML",
-                reply_markup=clavier)
+                reply_markup=clavier, link_preview_options={"is_disabled": True})
         if d.get("ok") or "not modified" in str(d.get("description", "")):
             return
     mid = envoyer(texte, reply_markup=clavier, silencieux=not reposter)
@@ -700,10 +752,10 @@ def deuxieme_appui(uid, action, ref):
 def callback_tableau(cb_id, user, uid, nom, action, ref):
     if action == "tann":
         if not est_admin(uid):
-            alerte(cb_id, "Réservé aux administrateurs. Le donneur touche deux fois sa ligne pour la marquer prise ailleurs.")
+            alerte(cb_id, "Réservé aux administrateurs. Le donneur touche deux fois le bouton de sa course pour la marquer prise ailleurs.")
             return
         _mode_annuler[uid] = time.time()
-        alerte(cb_id, "Prise ailleurs (60 s) : touche deux fois la course concernée.")
+        alerte(cb_id, "Prise ailleurs (60 s) : touche deux fois le bouton de la course concernée.")
         return
     if action == "tall":
         libres = [c for c in courses_tableau() if c["statut"] == "open"]
@@ -741,7 +793,7 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
     if annuler:
         if not deuxieme_appui(uid, "ann", ref):
             alerte(cb_id, f"Prise ailleurs ?\n{detail_course(c)}\n\n"
-                          f"Touche à nouveau la ligne dans les {CONFIRMATION_SECONDES} s pour la retirer.")
+                          f"Touche à nouveau le bouton dans les {CONFIRMATION_SECONDES} s pour la retirer.")
             return
         _mode_annuler.pop(uid, None)
         cloturer(c, "trouvee")
@@ -749,7 +801,7 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
         return
     if not deuxieme_appui(uid, "prendre", ref):
         alerte(cb_id, f"Prendre cette course ?\n{detail_course(c)}\n\n"
-                      f"Touche à nouveau la ligne dans les {CONFIRMATION_SECONDES} s pour confirmer.")
+                      f"Touche à nouveau le bouton dans les {CONFIRMATION_SECONDES} s pour confirmer.")
         return
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
     c["pris_par_username"] = user.get("username")
