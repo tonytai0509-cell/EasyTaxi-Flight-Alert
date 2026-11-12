@@ -809,6 +809,11 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
     if not c:
         repondre_callback(cb_id, "Course introuvable.")
         return
+    if c["statut"] == "trouvee" and (uid == c["donneur_id"] or est_admin(uid)):
+        c["statut"], c["ferme_ts"] = "open", None
+        maj_carte(c)
+        repondre_callback(cb_id, "🟢 Course remise, elle est de nouveau libre.")
+        return
     if c["statut"] != "open":
         copie = copie_de(c)
         if c["statut"] == "prise":
@@ -824,12 +829,10 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
         return
     annuler = uid == c["donneur_id"] or (time.time() - _mode_annuler.get(uid, 0) < ANNULATION_SECONDES and est_admin(uid))
     if annuler:
-        if not deuxieme_appui(uid, "ann", ref):
-            repondre_callback(cb_id, f"🤝 Course de {c['heure']} prise ailleurs ? 👉 Touche encore pour la retirer")
-            return
+        # Un seul appui ; une erreur se corrige en retouchant « 🤝 Ailleurs » (la course redevient libre).
         _mode_annuler.pop(uid, None)
         cloturer(c, "trouvee")
-        repondre_callback(cb_id, "C'est noté : prise ailleurs 🤝")
+        repondre_callback(cb_id, "🤝 Prise ailleurs. Retouche le bouton pour la remettre.")
         return
     # Les infos sont dans la bulle : un seul appui suffit pour prendre la course.
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
