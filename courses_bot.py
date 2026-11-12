@@ -614,15 +614,15 @@ def ligne_tableau(c):
     if s == "open":
         return f"✅ {trajet}"
     if s == "prise":
-        return f"✔️ {trajet} · {prenom(c['pris_par_nom'])}"
+        return f"✔️ {prenom(c['pris_par_nom'])} · {trajet}"
     if s == "transferee":
         if copie and copie["statut"] == "prise":
-            return f"✔️ {trajet} · {prenom(copie['pris_par_nom'])} (ET)"
+            return f"✔️ {prenom(copie['pris_par_nom'])} (ET) · {trajet}"
         if copie and copie["statut"] == "open":
-            return f"↪️ {trajet} · sur ET"
-        return f"⌛ {trajet} · ET"
+            return f"↪️ sur ET · {trajet}"
+        return f"⌛ ET · {trajet}"
     if s == "trouvee":
-        return f"🤝 {trajet} · prise ailleurs"
+        return f"🤝 ailleurs · {trajet}"
     return {"annulee": "🗑", "arretee": "⏹", "expiree": "⌛"}.get(s, "•") + f" {trajet}"
 
 
