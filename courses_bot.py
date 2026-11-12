@@ -209,9 +209,11 @@ def declarer_libre(user):
     ancien = state["libres"].pop(uid, None)
     if ancien:
         supprimer(ancien["id"], ancien.get("chat"))
-    mid = envoyer(f"🟢 <b>{echapper(nom_affiche(user))}</b> est libre", silencieux=True)
+    lien = lien_libre()
+    clavier = {"inline_keyboard": [[{"text": "📍 Confirmer ma position", "url": lien}]]} if lien else None
+    mid = envoyer(f"🟢 <b>{echapper(nom_affiche(user))}</b> est libre", reply_markup=clavier, silencieux=True)
     if mid:
-        state["libres"][uid] = {"id": mid, "ts": time.time(), "chat": groupe()}
+        state["libres"][uid] = {"id": mid, "ts": time.time(), "chat": groupe(), "nom": nom_affiche(user)}
 
 
 def retirer_libre(uid):
@@ -229,6 +231,13 @@ def retirer_invitation(uid):
 def lien_bot():
     m = re.match(r"https?://t\.me/([^/?#]+)", APP_LINK or "")
     return f"https://t.me/{m.group(1)}" if m else ""
+
+
+def lien_libre():
+    """Petite page qui prend la position (2 appuis) pour afficher « Ryan 4 min » sous les courses."""
+    if not APP_LINK:
+        return ""
+    return APP_LINK + ("&" if "?" in APP_LINK else "?") + ("startapp=librew" if est_web() else "startapp=libre")
 
 
 def lien_carte():
@@ -659,6 +668,9 @@ def ligne_bulle(c):
         extra.append({"trouvee": "prise ailleurs", "annulee": "annulée", "arretee": "arrêtée",
                       "expiree": "personne ne l'a prise"}[s])
     t += " <i>· " + " · ".join(extra) + "</i>"
+    if s == "open" and c.get("proches"):
+        t += "\n🚕 Libres près du départ : " + " · ".join(
+            (f"<b>{echapper(n)} {m} min</b>" if i == 0 else f"{echapper(n)} {m} min") for i, (n, m) in enumerate(c["proches"]))
     if s == "open" and c.get("tirage"):
         noms = ", ".join(echapper(i["nom"].split()[0]) for i in c.get("inscrits", {}).values())
         if c.get("tirage_fin"):
@@ -947,6 +959,8 @@ def _publier_course(w):
         state["courses"][cid] = c
         if not w.get("sans_tableau"):
             maj_lot(c["lot"], nouveau=True, silencieux=bool(w.get("silencieux")))
+        if not c["demain"]:
+            lancer_proches(cid)
         return c
     # Plusieurs courses d'un coup : seule la 1re fait sonner les téléphones.
     mid = envoyer(texte_course(c), reply_markup=clavier_course(c), silencieux=bool(w.get("silencieux")))
@@ -1098,7 +1112,7 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 <script>
 var tg=(window.Telegram&&window.Telegram.WebApp)||{ready:function(){},expand:function(){},close:function(){},initData:""};
 try{tg.ready();tg.expand();}catch(e){}
-try{if((tg.initDataUnsafe||{}).start_param==="carte"){location.replace("/carte"+location.hash);}}catch(e){}
+try{var sp=(tg.initDataUnsafe||{}).start_param||"";if(sp==="carte"){location.replace("/carte"+location.hash);}else if(sp.indexOf("libre")===0){location.replace("/libre"+location.hash);}}catch(e){}
 var $=function(id){return document.getElementById(id)};
 function tap(){try{tg.HapticFeedback.impactOccurred("light");}catch(e){}}
 
@@ -1395,6 +1409,43 @@ document.addEventListener("visibilitychange",function(){
 </script></body></html>"""
 
 
+PAGE_LIBRE = """<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Je suis libre</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:var(--tg-theme-bg-color,#fff);--fg:var(--tg-theme-text-color,#111);--hint:var(--tg-theme-hint-color,#7d8590);--card:var(--tg-theme-secondary-bg-color,#f1f3f5);--btn:var(--tg-theme-button-color,#2481cc);--btnfg:var(--tg-theme-button-text-color,#fff)}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:16px/1.4 -apple-system,Roboto,"Segoe UI",sans-serif}
+.c{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box}
+.i{font-size:56px}h1{font-size:21px;margin:12px 0 6px}p{color:var(--hint);margin:0 0 18px}
+button{border:0;border-radius:14px;padding:14px 22px;background:var(--btn);color:var(--btnfg);font:600 16px -apple-system,Roboto,sans-serif;display:none}
+</style></head><body><div class="c"><div class="i" id="i">📍</div><h1 id="t">Position en cours…</h1><p id="p">Autorise la position si le téléphone la demande.</p><button id="b" type="button">Réessayer</button></div>
+<script>
+var tg=(window.Telegram&&window.Telegram.WebApp)||{ready:function(){},expand:function(){},close:function(){},initData:""};
+try{tg.ready();}catch(e){}
+function $(id){return document.getElementById(id);}
+function fin(ok,titre,texte){$("i").textContent=ok?"✅":"⚠️";$("t").textContent=titre;$("p").textContent=texte;$("b").style.display=ok?"none":"inline-block";
+  if(ok){try{tg.HapticFeedback.notificationOccurred("success");}catch(e){}setTimeout(function(){tg.close();},1500);}}
+function envoyer(lat,lon){
+  fetch("/api/libre",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData,lat:lat,lon:lon})})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j.ok)fin(true,"Tu es libre, c'est noté !","Position gardée 30 min. La page se ferme toute seule.");
+      else fin(false,"Pas enregistré",j.erreur||"Réessaie.");
+    }).catch(function(){fin(false,"Pas de connexion","Réessaie dans un instant.");});
+}
+function lancer(){
+  $("i").textContent="📍";$("t").textContent="Position en cours…";$("b").style.display="none";
+  if(!navigator.geolocation){fin(false,"Position indisponible","Ton téléphone ne donne pas la position ici.");return;}
+  navigator.geolocation.getCurrentPosition(function(p){envoyer(p.coords.latitude,p.coords.longitude);},
+    function(){fin(false,"Position refusée","Tu restes « libre », mais sans le temps de trajet. Autorise la position pour l'afficher.");},
+    {enableHighAccuracy:true,timeout:15000,maximumAge:60000});
+}
+$("b").addEventListener("click",lancer);
+lancer();
+</script></body></html>"""
+
+
 PAGE_CARTE = """<!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
@@ -1540,6 +1591,8 @@ class FormulaireHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.split("?")[0] == "/carte":
             self._repondre(200, PAGE_CARTE, "text/html; charset=utf-8")
+        elif self.path.split("?")[0] == "/libre":
+            self._repondre(200, PAGE_LIBRE, "text/html; charset=utf-8")
         elif self.path.split("?")[0] in ("/", "/index.html"):
             self._repondre(200, PAGE_FORMULAIRE, "text/html; charset=utf-8")
         else:
@@ -1560,6 +1613,36 @@ class FormulaireHandler(BaseHTTPRequestHandler):
             except Exception:
                 logger.exception("Positions")
                 self._repondre(400, json.dumps({"ok": False}))
+            return
+        if self.path == "/api/libre":
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                corps = json.loads(self.rfile.read(n).decode("utf-8")) if 0 < n <= 10000 else {}
+                user = valider_init_data(str(corps.get("initData", "")))
+                chat = WEB_CHAT_ID if (user and user.get("_start") == "librew" and WEB_CHAT_ID) else CHAT_ID
+                lat, lon = float(corps.get("lat")), float(corps.get("lon"))
+                if not user or not membre_de(user["id"], chat) or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    self._repondre(403, json.dumps({"ok": False, "erreur": "Réservé aux membres du groupe."}))
+                    return
+                with LOCK:
+                    now = time.time()
+                    ancienne = state["positions"].get(str(user["id"]))
+                    fin = max(now + LIBRE_POSITION_SECONDES, ancienne["fin"] if ancienne else 0)
+                    state["positions"][str(user["id"])] = {"nom": nom_affiche(user), "lat": lat, "lon": lon,
+                                                           "ts": now, "fin": fin}
+                    with dans(chat):
+                        if cle_u(user["id"]) not in state["libres"]:
+                            declarer_libre(user)
+                    # Courses libres du moment : on recalcule qui est le plus près.
+                    for c in list(state["courses"].values()):
+                        if str(c.get("chat")) == str(chat) and c["statut"] == "open" and not c.get("demain") \
+                                and now - c["cree_ts"] < 2 * 3600:
+                            lancer_proches(c["id"])
+                    sauver_etat()
+                self._repondre(200, json.dumps({"ok": True}))
+            except Exception:
+                logger.exception("Position libre")
+                self._repondre(400, json.dumps({"ok": False, "erreur": "Position illisible."}))
             return
         if self.path in ("/api/mes_courses", "/api/retour"):
             try:
@@ -1716,6 +1799,63 @@ def traiter_callback(cb):
         return
     with dans(msg["chat"]["id"]):
         traiter_callback_groupe(cb, cb_id, user, uid, nom, msg)
+
+
+LIBRE_POSITION_SECONDES = 30 * 60
+
+
+def candidats_proches(chat):
+    """Chauffeurs « libres » de ce groupe dont la position a moins de 30 min : [(uid, nom, (lon, lat))]."""
+    now = time.time()
+    res = []
+    for cle, l in state["libres"].items():
+        if str(l.get("chat")) != str(chat):
+            continue
+        uid = cle.split("|")[-1]
+        p = state["positions"].get(uid)
+        if p and now - p["ts"] < LIBRE_POSITION_SECONDES and now < p["fin"] + 120:
+            res.append((uid, l.get("nom") or p["nom"], (p["lon"], p["lat"])))
+    return res
+
+
+def calculer_proches(cid):
+    """En arrière-plan : temps de route (IGN) de chaque chauffeur libre jusqu'au départ de la course."""
+    with LOCK:
+        c = state["courses"].get(cid)
+        if not c or c["statut"] != "open" or c.get("demain"):
+            return
+        cands = candidats_proches(c.get("chat"))
+        depart, dep = c["depart"], c.get("dep_pos")
+    if not cands:
+        res = []
+    else:
+        try:
+            if not dep:
+                loc = prix.localiser(depart)
+                dep = (loc[2], loc[3]) if loc else None
+            res = []
+            for uid, nom, pos in cands[:8]:
+                try:
+                    res.append([prenom(nom), prix.itineraire(pos, dep)[1]])
+                except Exception:
+                    pass
+            res.sort(key=lambda r: r[1])
+        except Exception:
+            logger.exception("Calcul des chauffeurs proches")
+            return
+    with LOCK:
+        c = state["courses"].get(cid)
+        if not c or c["statut"] != "open":
+            return
+        c["dep_pos"] = dep
+        if res != (c.get("proches") or []):
+            c["proches"] = res[:3]
+            maj_carte(c)
+            sauver_etat()
+
+
+def lancer_proches(cid):
+    threading.Thread(target=calculer_proches, args=(cid,), daemon=True).start()
 
 
 TIRAGE_SECONDES = 120
