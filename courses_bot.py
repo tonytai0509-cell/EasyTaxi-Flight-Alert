@@ -631,43 +631,35 @@ def bloc_tableau(n, c, complet=True):
     return "\n".join(l)
 
 
-def texte_lot(courses):
-    """Un message par envoi : une ligne (un bouton) par course en dessous."""
-    donneurs = []
-    for c in courses:
-        if c["donneur_nom"] not in donneurs:
-            donneurs.append(c["donneur_nom"])
-    qui = echapper(", ".join(donneurs))
-    titre = f"Course de {qui}" if len(courses) == 1 else f"{len(courses)} courses de {qui}"
-    if any(c.get("urgent") and c["statut"] == "open" for c in courses):
-        entete = f"🚨 <b>URGENT · {titre}</b>"
-    else:
-        entete = f"🚕 <b>{titre}</b>"
-    # Adresses complètes dans le message : cliquables (GPS) et copiables (appui long).
-    sep = "\n" if len(courses) == 1 else "\n\n"
-    texte = entete + sep + "\n\n".join(bloc_tableau(0, c) for c in courses)
-    if len(texte) > 3900:
-        # Trop long pour un message : les courses fermées passent sur une seule ligne.
-        texte = entete + sep + "\n\n".join(bloc_tableau(0, c, complet=(c["statut"] == "open")) for c in courses)
-    return texte[:4096]
-
-
-def ligne_tableau(c):
-    trajet = f"{c['heure']} · {adresse_courte(c['depart'])} → {adresse_courte(c['arrivee'])}"
+def pastille(c):
     s, copie = c["statut"], copie_de(c)
     if s == "open":
-        return f"{'🚨' if c.get('urgent') else '✅'} {trajet}"
-    if s == "prise":
-        return f"✔️ {prenom(c['pris_par_nom'])} · {trajet}"
+        return "🔴" if c.get("urgent") else "🟢"
+    if s == "prise" or (s == "transferee" and copie and copie["statut"] == "prise"):
+        return "✅"
     if s == "transferee":
-        if copie and copie["statut"] == "prise":
-            return f"✔️ {prenom(copie['pris_par_nom'])} (ET) · {trajet}"
-        if copie and copie["statut"] == "open":
-            return f"↪️ sur ET · {trajet}"
-        return f"⌛ ET · {trajet}"
-    if s == "trouvee":
-        return f"🤝 ailleurs · {trajet}"
-    return {"annulee": "🗑", "arretee": "⏹", "expiree": "⌛"}.get(s, "•") + f" {trajet}"
+        return "↪️" if copie and copie["statut"] == "open" else "⌛"
+    return {"trouvee": "🤝", "annulee": "🗑", "arretee": "⏹", "expiree": "⌛"}.get(s, "•")
+
+
+def ligne_bulle(c):
+    """Une course en une ligne : pastille, heure, départ → arrivée (GPS), commentaire, donneur."""
+    urg = "URGENT " if (c.get("urgent") and c["statut"] == "open") else ""
+    t = (f"{pastille(c)} <b>{urg}{echapper(c['heure'])}</b> "
+         f"{adresse_cliquable(c['depart'])} → {adresse_cliquable(c['arrivee'])}")
+    extra = [echapper(c["commentaire"])] if c.get("commentaire") else []
+    extra.append(echapper(c["donneur_nom"]))
+    s, copie = c["statut"], copie_de(c)
+    if s == "transferee" and not (copie and copie["statut"] == "prise"):
+        extra.append(f"sur {echapper(NOM_GROUPE)}" if copie and copie["statut"] == "open" else f"fermée sur {echapper(NOM_GROUPE)}")
+    elif s in ("trouvee", "annulee", "arretee", "expiree"):
+        extra.append({"trouvee": "prise ailleurs", "annulee": "annulée", "arretee": "arrêtée",
+                      "expiree": "personne ne l'a prise"}[s])
+    return t + " <i>· " + " · ".join(extra) + "</i>"
+
+
+def texte_lot(courses):
+    return "\n".join(ligne_bulle(c) for c in courses)[:4096]
 
 
 def bouton_tableau(n, c):
@@ -685,33 +677,33 @@ def bouton_tableau(n, c):
     return {"text": t, "callback_data": f"t:{c['id']}"}
 
 
-def bouton_ligne(c, avec_lien=True, avec_style=True):
-    """Ligne d'une course. Prise : la ligne ouvre la conversation privée avec le chauffeur."""
-    b = {"text": ligne_tableau(c), "callback_data": f"t:{c['id']}"}
-    if avec_style and c.get("urgent") and c["statut"] == "open":
-        b["style"] = "danger"   # bouton rouge (versions récentes de Telegram)
-    pris = c if c["statut"] == "prise" else copie_de(c) if c["statut"] == "transferee" else None
-    ecrire = bouton_ecrire(pris) if (avec_lien and pris) else None
-    if ecrire:
-        b = {"text": b["text"].replace("✔️", "💬", 1), "url": ecrire["url"]}
-    return b
+def bouton_action(c, avec_lien=True, avec_style=True):
+    """Bouton sous la bulle : « Je la prends », puis « 💬 Prénom » (conversation privée) une fois prise."""
+    s, copie = c["statut"], copie_de(c)
+    cb = f"t:{c['id']}"
+    if s == "open":
+        b = {"text": f"{pastille(c)} Je la prends", "callback_data": cb}
+        if avec_style and c.get("urgent"):
+            b["style"] = "danger"   # bouton rouge (versions récentes de Telegram)
+        return b
+    pris = c if s == "prise" else copie if (s == "transferee" and copie and copie["statut"] == "prise") else None
+    if pris:
+        ecrire = bouton_ecrire(pris) if avec_lien else None
+        nom = prenom(pris.get("pris_par_nom"))
+        return {"text": f"💬 {nom}", "url": ecrire["url"]} if ecrire else {"text": f"✅ {nom}", "callback_data": cb}
+    if s == "transferee":
+        return {"text": "↪️ sur ET" if copie and copie["statut"] == "open" else "⌛ ET", "callback_data": cb}
+    return {"text": {"trouvee": "🤝 Ailleurs", "annulee": "🗑 Annulée", "arretee": "⏹ Arrêtée",
+                     "expiree": "⌛ Expirée"}.get(s, "•"), "callback_data": cb}
 
 
 def clavier_lot(lot, courses, avec_lien=True, avec_style=True):
-    seul = len(courses) == 1
-    lignes = [[bouton_ligne(c, avec_lien, avec_style)] for c in courses]
-    libres = [c for c in courses if c["statut"] == "open"]
-    if courses:
-        # Copier pour coller dans un autre groupe : un bouton par course, même prise (repérée par son heure).
-        copies = [{"text": "Copier" if len(courses) == 1 else c['heure'].replace('demain ', ''),
-                   "copy_text": {"text": texte_copie(c)}} for c in courses]
-        lignes += [copies[i:i + 3] for i in range(0, len(copies), 3)]
-    if est_web() and libres:
-        et = {"text": "↪️ EasyTaxi" if len(libres) == 1 else "↪️ Libres → EasyTaxi", "callback_data": f"tall:{lot}"}
-        if len(courses) == 1:
-            lignes[-1].append(et)   # « ⧉ Copier » et « ↪️ EasyTaxi » sur la même ligne
-        else:
-            lignes.append([et])
+    lignes = []
+    for c in courses:
+        lignes.append([bouton_action(c, avec_lien, avec_style),
+                       {"text": "Copier", "copy_text": {"text": texte_copie(c)}}])
+        if est_web() and c["statut"] == "open":
+            lignes.append([{"text": "↪️ Envoyer sur EasyTaxi", "callback_data": f"tall:{lot}"}])
     return {"inline_keyboard": lignes}
 
 
@@ -806,14 +798,12 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
         elif not libres:
             alerte(cb_id, "Aucune course libre à envoyer.")
         elif not deuxieme_appui(uid, "tall", ref):
-            alerte(cb_id, f"Envoyer {len(libres)} course(s) libre(s) sur {NOM_GROUPE} ?\n\n"
-                          f"Touche à nouveau le bouton dans les {CONFIRMATION_SECONDES} s pour confirmer.")
+            repondre_callback(cb_id, f"↪️ Envoyer sur {NOM_GROUPE} ? 👉 Touche encore pour confirmer")
         else:
-            lot_copie = str(state["next_id"])
-            n = sum(1 for c in libres if transferer(c, user, sans_tableau=True, lot=lot_copie))
-            with dans(CHAT_ID):
-                maj_lot(lot_copie, nouveau=True)   # un seul message dans EasyTaxi Group
-            repondre_callback(cb_id, f"{n} course(s) envoyée(s) sur {NOM_GROUPE} ✅")
+            n = 0
+            for c in libres:
+                n += bool(transferer(c, user, silencieux=n > 0))
+            repondre_callback(cb_id, f"Envoyée sur {NOM_GROUPE} ✅" if n == 1 else f"{n} courses envoyées sur {NOM_GROUPE} ✅")
         return
     c = state["courses"].get(ref)
     if not c:
@@ -1422,11 +1412,11 @@ def creer_course_depuis_formulaire(corps):
                           "urgent": bool(x.get("urgent")),
                           "sans_tableau": True})
     with LOCK, dans(chat):
-        lot = str(state["next_id"])
-        for w in a_publier:
-            w["lot"] = lot
+        # Une petite bulle par course, l'une après l'autre ; seule la 1re fait sonner.
+        for i, w in enumerate(a_publier):
+            w["sans_tableau"] = False
+            w["silencieux"] = i > 0
             publier_course(w)
-        maj_lot(lot, nouveau=True)   # un seul message (et une seule notification) pour l'envoi
         retirer_invitation(user["id"])
         retirer_libre(user["id"])
         sauver_etat()
@@ -1601,12 +1591,12 @@ def traiter_callback(cb):
         traiter_callback_groupe(cb, cb_id, user, uid, nom, msg)
 
 
-def transferer(c, user, sans_tableau=False, lot=None):
+def transferer(c, user, sans_tableau=False, lot=None, silencieux=False):
     """Easy Web -> groupe principal : une course neuve, postée au nom de celui qui transfère,
     sans les refus ni rien qui montre qu'elle vient d'ailleurs."""
     w = {"uid": user["id"], "nom": nom_affiche(user), "heure": c["heure"], "demain": c.get("demain"),
          "depart": c["depart"], "arrivee": c["arrivee"], "commentaire": c.get("commentaire", ""),
-         "chat": CHAT_ID, "source": c["id"], "sans_tableau": sans_tableau, "lot": lot,
+         "chat": CHAT_ID, "source": c["id"], "sans_tableau": sans_tableau, "lot": lot, "silencieux": silencieux,
          "urgent": c.get("urgent")}
     copie = publier_course(w)
     if not copie:
