@@ -817,7 +817,8 @@ def _publier_course(w):
         if not w.get("sans_tableau"):
             maj_tableau(reposter=True)
         return c
-    mid = envoyer(texte_course(c), reply_markup=clavier_course(c))
+    # Plusieurs courses d'un coup : seule la 1re fait sonner les téléphones.
+    mid = envoyer(texte_course(c), reply_markup=clavier_course(c), silencieux=bool(w.get("silencieux")))
     if not mid:
         global COPIER_LABEL
         if COPIER_LABEL != "Copier":
@@ -1152,7 +1153,7 @@ function afficherLot(){
   });
   libelleOk();
 }
-if(WEB){$("plus").style.display="block";}
+$("plus").style.display="block";
 ["depart","arrivee","commentaire","hh","mm"].forEach(function(id){$(id).addEventListener("input",libelleOk);});
 $("plus").addEventListener("click",function(){
   var d=courante();
@@ -1310,7 +1311,8 @@ def creer_course_depuis_formulaire(corps):
                           "depart": depart, "arrivee": arrivee, "commentaire": commentaire, "chat": chat,
                           "sans_tableau": True})
     with LOCK, dans(chat):
-        for w in a_publier:
+        for i, w in enumerate(a_publier):
+            w["silencieux"] = i > 0
             publier_course(w)
         if est_web():
             maj_tableau(reposter=True)   # une seule notification pour tout le lot
