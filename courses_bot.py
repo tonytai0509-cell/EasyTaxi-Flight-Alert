@@ -1140,10 +1140,14 @@ function suggestions(idInput,idListe){
   function chercher(q){
     if(ctl){try{ctl.abort();}catch(e){}}
     ctl=(window.AbortController?new AbortController():null);
-    var url="https://photon.komoot.io/api/?lang=fr&limit=8&lat=43.70&lon=7.26&location_bias_scale=0.7&q="+encodeURIComponent(q);
-    fetch(url,ctl?{signal:ctl.signal}:{}).then(function(r){return r.json();}).then(function(j){
-      if(inp.value.trim()===q&&document.activeElement===inp)afficher(j.features);
-    }).catch(function(){});
+    /* Deux sources en parallèle : base nationale des adresses (IGN) puis OpenStreetMap (Photon).
+       Si l'une ne répond pas, l'autre suffit. */
+    var opt=ctl?{signal:ctl.signal}:{},ban=[],osm=[];
+    function maj(){if(inp.value.trim()===q&&document.activeElement===inp)afficher(ban.concat(osm));}
+    fetch("https://data.geopf.fr/geocodage/search?autocomplete=1&limit=5&lat=43.70&lon=7.26&q="+encodeURIComponent(q),opt)
+      .then(function(r){return r.json();}).then(function(j){ban=j.features||[];maj();}).catch(function(){});
+    fetch("https://photon.komoot.io/api/?lang=fr&limit=6&lat=43.70&lon=7.26&location_bias_scale=0.7&q="+encodeURIComponent(q),opt)
+      .then(function(r){return r.json();}).then(function(j){osm=j.features||[];maj();}).catch(function(){});
   }
   inp.addEventListener("input",function(){
     clearTimeout(minuteur);
