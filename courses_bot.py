@@ -618,8 +618,7 @@ def statut_tableau(c):
 
 
 def bloc_tableau(n, c, complet=True):
-    num = f"{n} · " if n else ""
-    l = [f"<b>{num}{echapper(c['heure'])}</b> · <i>{echapper(c['donneur_nom'])}</i>"]
+    l = [f"🕐 <b>{echapper(c['heure'])}</b>"]
     if complet:
         l += [f"📍 {adresse_cliquable(c['depart'])}", f"🏁 {adresse_cliquable(c['arrivee'])}"]
         if c.get("commentaire"):
@@ -641,8 +640,16 @@ def texte_lot(courses):
     qui = echapper(", ".join(donneurs))
     titre = f"Course de {qui}" if len(courses) == 1 else f"{len(courses)} courses de {qui}"
     if any(c.get("urgent") and c["statut"] == "open" for c in courses):
-        return f"🚨 <b>URGENT · {titre}</b>"
-    return f"🚕 <b>{titre}</b>"
+        entete = f"🚨 <b>URGENT · {titre}</b>"
+    else:
+        entete = f"🚕 <b>{titre}</b>"
+    # Adresses complètes dans le message : cliquables (GPS) et copiables (appui long).
+    sep = "\n" if len(courses) == 1 else "\n\n"
+    texte = entete + sep + "\n\n".join(bloc_tableau(0, c) for c in courses)
+    if len(texte) > 3900:
+        # Trop long pour un message : les courses fermées passent sur une seule ligne.
+        texte = entete + sep + "\n\n".join(bloc_tableau(0, c, complet=(c["statut"] == "open")) for c in courses)
+    return texte[:4096]
 
 
 def ligne_tableau(c):
@@ -828,14 +835,14 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
     annuler = uid == c["donneur_id"] or (time.time() - _mode_annuler.get(uid, 0) < ANNULATION_SECONDES and est_admin(uid))
     if annuler:
         if not deuxieme_appui(uid, "ann", ref):
-            bandeau(cb_id, "🤝 Prise ailleurs ?", c, "👉 Touche encore pour la retirer")
+            repondre_callback(cb_id, f"🤝 Course de {c['heure']} prise ailleurs ? 👉 Touche encore pour la retirer")
             return
         _mode_annuler.pop(uid, None)
         cloturer(c, "trouvee")
         repondre_callback(cb_id, "C'est noté : prise ailleurs 🤝")
         return
     if not deuxieme_appui(uid, "prendre", ref):
-        bandeau(cb_id, "🚕 Prendre ?", c, "👉 Touche encore pour la prendre")
+        repondre_callback(cb_id, f"🚕 Prendre la course de {c['heure']} ? 👉 Touche encore pour la prendre")
         return
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
     c["pris_par_username"] = user.get("username")
