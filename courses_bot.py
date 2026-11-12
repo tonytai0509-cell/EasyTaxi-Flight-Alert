@@ -645,9 +645,11 @@ def pastille(c):
 def ligne_bulle(c):
     """Une course en une ligne : pastille, heure, départ → arrivée (GPS), commentaire, donneur."""
     urg = "URGENT " if (c.get("urgent") and c["statut"] == "open") else ""
-    t = (f"{pastille(c)} <b>{urg}{echapper(c['heure'])}</b> "
+    t = (f"{pastille(c)} <b>{urg}{echapper(c['heure'])}</b> {'↩️ ' if c.get('retour_de') else ''}"
          f"{adresse_cliquable(c['depart'])} → {adresse_cliquable(c['arrivee'])}")
     extra = [echapper(c["commentaire"])] if c.get("commentaire") else []
+    if c.get("retour_de"):
+        extra.append("retour")
     extra.append(echapper(c["donneur_nom"]))
     s, copie = c["statut"], copie_de(c)
     if s == "transferee" and not (copie and copie["statut"] == "prise"):
@@ -700,8 +702,11 @@ def bouton_action(c, avec_lien=True, avec_style=True):
 def clavier_lot(lot, courses, avec_lien=True, avec_style=True):
     lignes = []
     for c in courses:
-        lignes.append([bouton_action(c, avec_lien, avec_style),
-                       {"text": "Copier", "copy_text": {"text": texte_copie(c)}}])
+        rang = [bouton_action(c, avec_lien, avec_style), {"text": "Copier", "copy_text": {"text": texte_copie(c)}}]
+        if c["statut"] != "open" and not c.get("retour_de"):
+            # Retour à la demande (1 h ou 2 après) : un appui, la course inverse part en « maintenant ».
+            rang.append({"text": "↩️ Retour", "callback_data": f"ret:{c['id']}"})
+        lignes.append(rang)
         if est_web() and c["statut"] == "open":
             lignes.append([{"text": "↪️ Envoyer sur EasyTaxi", "callback_data": f"tall:{lot}"}])
     return {"inline_keyboard": lignes}
@@ -892,6 +897,7 @@ def _publier_course(w):
         "commentaire": w.get("commentaire", ""),
         "demain": bool(w.get("demain")),
         "urgent": bool(w.get("urgent")),
+        "retour_de": w.get("retour_de"),
         "poste_a": datetime.now(TZ).strftime("%H:%M"),
         "cree_ts": time.time(),
         "dernier_rappel_ts": time.time(),
@@ -1603,6 +1609,30 @@ def traiter_callback(cb):
         traiter_callback_groupe(cb, cb_id, user, uid, nom, msg)
 
 
+def envoyer_retour(cb_id, user, uid, ref):
+    """« ↩️ Retour » : publie tout de suite la course inverse, en « maintenant »."""
+    c = state["courses"].get(ref)
+    if not c:
+        repondre_callback(cb_id, "Course introuvable.")
+        return
+    if uid != c["donneur_id"] and not est_admin(uid):
+        repondre_callback(cb_id, "Seul celui qui a donné la course peut demander le retour.")
+        return
+    deja = state["courses"].get(c.get("retour_id") or "")
+    if deja:
+        repondre_callback(cb_id, "↩️ Le retour a déjà été envoyé.")
+        return
+    w = {"uid": uid, "nom": nom_affiche(user), "heure": "maintenant", "demain": False,
+         "depart": c["arrivee"], "arrivee": c["depart"], "commentaire": c.get("commentaire", ""),
+         "chat": c.get("chat"), "retour_de": c["id"]}
+    r = publier_course(w)
+    if not r:
+        repondre_callback(cb_id, "Envoi impossible, réessaie.")
+        return
+    c["retour_id"] = r["id"]
+    repondre_callback(cb_id, "↩️ Retour envoyé au groupe.")
+
+
 def transferer(c, user, sans_tableau=False, lot=None, silencieux=False):
     """Easy Web -> groupe principal : une course neuve, postée au nom de celui qui transfère,
     sans les refus ni rien qui montre qu'elle vient d'ailleurs."""
@@ -1621,6 +1651,9 @@ def transferer(c, user, sans_tableau=False, lot=None, silencieux=False):
 def traiter_callback_groupe(cb, cb_id, user, uid, nom, msg):
     action, _, ref = (cb.get("data") or "").partition(":")
 
+    if action == "ret":
+        envoyer_retour(cb_id, user, uid, ref)
+        return
     if action in ("t", "tall", "tann"):
         callback_tableau(cb_id, user, uid, nom, action, ref)
         return
