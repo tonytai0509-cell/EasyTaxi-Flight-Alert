@@ -696,7 +696,7 @@ def clavier_lot(lot, courses, avec_lien=True, avec_style=True):
     libres = [c for c in courses if c["statut"] == "open"]
     if courses:
         # Copier pour coller dans un autre groupe : un bouton par course, même prise (repérée par son heure).
-        copies = [{"text": "⧉ Copier" if len(courses) == 1 else f"⧉ {c['heure'].replace('demain ', '')}",
+        copies = [{"text": "Copier" if len(courses) == 1 else c['heure'].replace('demain ', ''),
                    "copy_text": {"text": texte_copie(c)}} for c in courses]
         lignes += [copies[i:i + 3] for i in range(0, len(copies), 3)]
     if est_web() and libres:
@@ -1584,7 +1584,8 @@ def transferer(c, user, sans_tableau=False, lot=None):
     sans les refus ni rien qui montre qu'elle vient d'ailleurs."""
     w = {"uid": user["id"], "nom": nom_affiche(user), "heure": c["heure"], "demain": c.get("demain"),
          "depart": c["depart"], "arrivee": c["arrivee"], "commentaire": c.get("commentaire", ""),
-         "chat": CHAT_ID, "source": c["id"], "sans_tableau": sans_tableau, "lot": lot}
+         "chat": CHAT_ID, "source": c["id"], "sans_tableau": sans_tableau, "lot": lot,
+         "urgent": c.get("urgent")}
     copie = publier_course(w)
     if not copie:
         return False
