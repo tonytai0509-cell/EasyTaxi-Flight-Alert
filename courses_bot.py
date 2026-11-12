@@ -33,6 +33,7 @@ import logging
 import os
 import random
 import re
+import secrets
 import contextlib
 import contextvars
 import threading
@@ -87,7 +88,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("courses_bot")
 
 state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}, "libres": {}, "positions": {}, "astuces": {}, "pos_rappel": {},
-         "boutons": {}, "claviers_jour": {}, "epingles": {}, "lots": {}}
+         "boutons": {}, "claviers_jour": {}, "epingles": {}, "lots": {}, "suivis": {}}
 INVITATION_SECONDS = 60  # durée d'affichage du bouton « Ouvrir le formulaire »
 
 
@@ -1077,12 +1078,16 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .ret span{flex:1;min-width:0}.ret small{display:block;color:var(--hint);margin-top:3px}
 .ret button{border:0;border-radius:10px;padding:10px 12px;background:var(--btn);color:var(--btnfg);font:600 14px "Poppins",-apple-system,Roboto,sans-serif;white-space:nowrap}
 .ret button:disabled{opacity:.45}
+.ret{flex-wrap:wrap}.ret .bts{display:flex;gap:8px;width:100%}.ret .bts button{flex:1}
+.ret .lien{background:#16a34a}
+.ret .url{width:100%;display:flex;gap:8px;align-items:center;background:var(--bg);border-radius:10px;padding:8px 10px;font-size:13px;word-break:break-all}
+.ret .url span{flex:1}.ret .url button{background:transparent;color:var(--btn);padding:4px 6px}
 #msg-ret{margin-top:14px;color:var(--hint);text-align:center;font-size:15px}
 #msg{margin-top:14px;color:#e5484d;min-height:22px;font-size:15px;text-align:center}
 </style></head><body>
 <h1>Donner une course</h1>
 <div class="trait"></div>
-<div class="onglets"><button type="button" id="o-nouv" class="actif">Nouvelle course</button><button type="button" id="o-ret">↩️ Retour</button></div>
+<div class="onglets"><button type="button" id="o-nouv" class="actif">Nouvelle course</button><button type="button" id="o-ret">📋 Mes courses</button></div>
 <div id="p-ret" style="display:none"><div id="liste-ret"></div><div id="msg-ret"></div></div>
 <div id="p-nouv">
 <div id="lot"></div>
@@ -1381,16 +1386,35 @@ function chargerRetours(){
         var b0=document.createElement("b");b0.textContent=c.heure+" ";s.appendChild(b0);
         s.appendChild(document.createTextNode(court(c.depart)+" → "+court(c.arrivee)));
         var sm=document.createElement("small");sm.textContent=c.envoye?"retour déjà envoyé":c.etat;s.appendChild(sm);
-        var b=document.createElement("button");b.type="button";b.textContent=c.envoye?"Envoyé":"↩️ Retour";b.disabled=c.envoye;
+        var bts=document.createElement("div");bts.className="bts";
+        var b=document.createElement("button");b.type="button";b.textContent=c.envoye?"Retour envoyé":"↩️ Retour";b.disabled=c.envoye||c.ouverte;
+        var bl=document.createElement("button");bl.type="button";bl.className="lien";bl.textContent="📲 Lien patient";bl.disabled=!c.pris;
+        bl.addEventListener("click",function(){
+          tap();bl.disabled=true;
+          fetch("/api/lien",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData,id:c.id})})
+            .then(function(r){return r.json();}).then(function(k){
+              bl.disabled=false;
+              if(!k.ok){$("msg-ret").textContent=k.erreur||"Erreur, réessaie.";return;}
+              var u=d.querySelector(".url");if(!u){u=document.createElement("div");u.className="url";d.appendChild(u);}
+              u.innerHTML="";var t=document.createElement("span");t.textContent="🔗 "+k.url+" · valable 2 h";
+              var cp=document.createElement("button");cp.type="button";cp.textContent="Copier";
+              cp.addEventListener("click",function(){
+                var fait=function(){cp.textContent="Copié ✅";};
+                if(navigator.clipboard){navigator.clipboard.writeText(k.url).then(fait,function(){prompt("Copie le lien :",k.url);});}
+                else{prompt("Copie le lien :",k.url);}
+              });
+              u.appendChild(t);u.appendChild(cp);
+            }).catch(function(){bl.disabled=false;$("msg-ret").textContent="Pas de connexion, réessaie.";});
+        });
         b.addEventListener("click",function(){
           tap();b.disabled=true;b.textContent="Envoi…";
           fetch("/api/retour",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData,id:c.id})})
             .then(function(r){return r.json();}).then(function(k){
-              if(k.ok){try{tg.HapticFeedback.notificationOccurred("success");}catch(e){}b.textContent="Envoyé";sm.textContent="retour envoyé au groupe ✅";}
+              if(k.ok){try{tg.HapticFeedback.notificationOccurred("success");}catch(e){}b.textContent="Retour envoyé";sm.textContent="retour envoyé au groupe ✅";}
               else{b.disabled=false;b.textContent="↩️ Retour";$("msg-ret").textContent=k.erreur||"Erreur, réessaie.";}
             }).catch(function(){b.disabled=false;b.textContent="↩️ Retour";$("msg-ret").textContent="Pas de connexion, réessaie.";});
         });
-        d.appendChild(s);d.appendChild(b);$("liste-ret").appendChild(d);
+        bts.appendChild(b);bts.appendChild(bl);d.appendChild(s);d.appendChild(bts);$("liste-ret").appendChild(d);
       });
     }).catch(function(){$("msg-ret").textContent="Pas de connexion, réessaie.";});
 }
@@ -1443,6 +1467,55 @@ function lancer(){
 }
 $("b").addEventListener("click",lancer);
 lancer();
+</script></body></html>"""
+
+
+PAGE_SUIVI = """<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Votre taxi</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+html,body{margin:0;height:100%;font:16px/1.4 -apple-system,Roboto,"Segoe UI",sans-serif;background:#fff;color:#111}
+#app{display:flex;flex-direction:column;height:100%}
+#haut{padding:12px 18px;font-weight:800;border-bottom:1px solid #eee}#haut span{color:#e5484d}
+#map{flex:1;min-height:240px;background:#e8eef3}
+#bas{padding:16px 18px 22px;box-shadow:0 -6px 18px rgba(0,0,0,.08)}
+#eta{font-size:26px;font-weight:800}#eta b{color:#16a34a}
+#sub{color:#555;font-size:15px;margin-top:4px}
+#ch{display:flex;align-items:center;gap:12px;margin-top:14px;padding-top:14px;border-top:1px solid #eee}
+#ch div:first-child{width:44px;height:44px;border-radius:50%;background:#111;color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px}
+#ch small{display:block;color:#666}
+.t{font-size:30px;line-height:30px}
+</style></head><body><div id="app">
+<div id="haut">Easy<span>Taxi</span> · suivi de votre taxi</div>
+<div id="map"></div>
+<div id="bas"><div id="eta">Chargement…</div><div id="sub"></div>
+<div id="ch" style="display:none"><div>🚕</div><div><b id="nom"></b><small>Taxi conventionné</small></div></div></div></div>
+<script>
+var jeton=location.pathname.split("/").pop();
+var map=null;
+try{map=L.map("map",{zoomControl:false}).setView([43.70,7.26],12);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:18,attribution:"© OpenStreetMap"}).addTo(map);}catch(e){map=null;}
+var mTaxi=null,mPrise=null,cadre=false;
+function icone(t){return L.divIcon({className:"",html:'<div class="t">'+t+'</div>',iconSize:[30,30],iconAnchor:[15,28]});}
+function maj(){
+  fetch("/api/suivi/"+jeton,{cache:"no-store"}).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){document.getElementById("eta").textContent="Ce lien a expiré";document.getElementById("sub").textContent="Le suivi n'est plus disponible.";return;}
+    if(d.chauffeur){document.getElementById("ch").style.display="flex";document.getElementById("nom").textContent=d.chauffeur;}
+    document.getElementById("sub").textContent="Prise en charge : "+d.depart;
+    if(d.eta!=null&&d.taxi){document.getElementById("eta").innerHTML=d.eta<=1?"Votre taxi <b>arrive</b>":"Arrivée dans <b>"+d.eta+" min</b>";}
+    else{document.getElementById("eta").textContent=d.pris?"Votre taxi est en route":"Recherche d'un taxi…";}
+    if(!map)return;   /* carte indisponible : le texte suffit */
+    if(d.prise){var p=[d.prise.lat,d.prise.lon];if(!mPrise)mPrise=L.marker(p,{icon:icone("📍")}).addTo(map);else mPrise.setLatLng(p);}
+    if(d.taxi){var t=[d.taxi.lat,d.taxi.lon];if(!mTaxi)mTaxi=L.marker(t,{icon:icone("🚕")}).addTo(map);else mTaxi.setLatLng(t);}
+    if(!cadre&&(mTaxi||mPrise)){cadre=true;var g=[];if(mTaxi)g.push(mTaxi.getLatLng());if(mPrise)g.push(mPrise.getLatLng());
+      if(g.length>1)map.fitBounds(L.latLngBounds(g),{padding:[50,50]});else map.setView(g[0],15);}
+  }).catch(function(){});
+}
+maj();setInterval(maj,15000);
 </script></body></html>"""
 
 
@@ -1593,6 +1666,11 @@ class FormulaireHandler(BaseHTTPRequestHandler):
             self._repondre(200, PAGE_CARTE, "text/html; charset=utf-8")
         elif self.path.split("?")[0] == "/libre":
             self._repondre(200, PAGE_LIBRE, "text/html; charset=utf-8")
+        elif self.path.startswith("/suivi/"):
+            self._repondre(200, PAGE_SUIVI, "text/html; charset=utf-8")
+        elif self.path.startswith("/api/suivi/"):
+            jeton = re.sub(r"[^A-Za-z0-9_\-]", "", self.path.split("/api/suivi/", 1)[1].split("?")[0])[:40]
+            self._repondre(200, json.dumps(etat_suivi(jeton), ensure_ascii=False))
         elif self.path.split("?")[0] in ("/", "/index.html"):
             self._repondre(200, PAGE_FORMULAIRE, "text/html; charset=utf-8")
         else:
@@ -1644,7 +1722,7 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                 logger.exception("Position libre")
                 self._repondre(400, json.dumps({"ok": False, "erreur": "Position illisible."}))
             return
-        if self.path in ("/api/mes_courses", "/api/retour"):
+        if self.path in ("/api/mes_courses", "/api/retour", "/api/lien"):
             try:
                 n = int(self.headers.get("Content-Length", "0"))
                 corps = json.loads(self.rfile.read(n).decode("utf-8")) if 0 < n <= 10000 else {}
@@ -1656,6 +1734,15 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                 with LOCK:
                     if self.path == "/api/mes_courses":
                         rep_ = {"ok": True, "courses": courses_pour_retour(user)}
+                    elif self.path == "/api/lien":
+                        c = state["courses"].get(str(corps.get("id", "")))
+                        if not c or str(c.get("chat")) != str(chat):
+                            rep_ = {"ok": False, "erreur": "Course introuvable."}
+                        else:
+                            ok, val = creer_suivi(c, user)
+                            hote = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
+                            rep_ = {"ok": True, "url": f"https://{hote}/suivi/{val}"} if ok else {"ok": False, "erreur": val}
+                            sauver_etat()
                     else:
                         c = state["courses"].get(str(corps.get("id", "")))
                         if not c or str(c.get("chat")) != str(chat):
@@ -1947,6 +2034,73 @@ def envoyer_retour(cb_id, user, uid, ref):
     repondre_callback(cb_id, msg)
 
 
+SUIVI_SECONDES = 2 * 3600
+_eta_cache = {}   # jeton -> (horodatage, minutes)
+
+
+def chauffeur_de(c):
+    """La course (ou sa copie transférée) prise par un chauffeur, sinon None."""
+    if c["statut"] == "prise":
+        return c
+    copie = copie_de(c)
+    return copie if (c["statut"] == "transferee" and copie and copie["statut"] == "prise") else None
+
+
+def creer_suivi(c, user):
+    """Lien de suivi pour le patient (valable 2 h). Retourne (ok, jeton ou message)."""
+    if c["donneur_id"] != user["id"]:
+        return False, "Seul celui qui a donné la course peut créer le lien."
+    if not chauffeur_de(c):
+        return False, "Personne n'a encore pris cette course."
+    now = time.time()
+    for j, sv in list(state.setdefault("suivis", {}).items()):
+        if now > sv["exp"]:
+            del state["suivis"][j]
+        elif sv["cid"] == c["id"]:
+            return True, j
+    jeton = secrets.token_urlsafe(8)
+    state["suivis"][jeton] = {"cid": c["id"], "exp": now + SUIVI_SECONDES}
+    return True, jeton
+
+
+def etat_suivi(jeton):
+    """Ce que voit le patient : prénom du chauffeur, position du taxi si connue, temps d'arrivée."""
+    with LOCK:
+        sv = state.get("suivis", {}).get(jeton)
+        if not sv or time.time() > sv["exp"]:
+            return {"ok": False}
+        c = state["courses"].get(sv["cid"])
+        if not c:
+            return {"ok": False}
+        ch = chauffeur_de(c)
+        rep_ = {"ok": True, "depart": c["depart"], "heure": c["heure"], "pris": bool(ch),
+                "chauffeur": prenom(ch.get("pris_par_nom")) if ch else None}
+        p = state["positions"].get(str(ch["pris_par_id"])) if ch else None
+        now = time.time()
+        taxi = (p["lon"], p["lat"]) if (p and now - p["ts"] < LIBRE_POSITION_SECONDES and now < p["fin"] + 120) else None
+        dep, depart = c.get("dep_pos"), c["depart"]
+        if taxi:
+            rep_["taxi"] = {"lat": taxi[1], "lon": taxi[0], "age": int(now - p["ts"])}
+    try:
+        if not dep:
+            loc = prix.localiser(depart)
+            dep = (loc[2], loc[3]) if loc else None
+            if dep:
+                with LOCK:
+                    c["dep_pos"] = dep
+        if dep:
+            rep_["prise"] = {"lat": dep[1], "lon": dep[0]}
+        if taxi and dep:
+            t, m = _eta_cache.get(jeton, (0, None))
+            if time.time() - t > 60:   # une demande d'itinéraire par minute au plus
+                m = prix.itineraire(taxi, dep)[1]
+                _eta_cache[jeton] = (time.time(), m)
+            rep_["eta"] = m
+    except Exception:
+        logger.exception("Suivi patient")
+    return rep_
+
+
 def courses_pour_retour(user):
     """Onglet « Retour » du formulaire : les courses du jour données par cette personne, dans ce groupe."""
     chat = WEB_CHAT_ID if (user.get("_start") == "web" and WEB_CHAT_ID) else CHAT_ID
@@ -1961,7 +2115,8 @@ def courses_pour_retour(user):
         etat = (f"✅ {prenom(pris.get('pris_par_nom'))}" if pris else
                 {"open": "🟢 libre", "trouvee": "🤝 ailleurs", "transferee": "↪️ sur ET"}.get(c["statut"], "fermée"))
         res.append({"id": c["id"], "heure": c["heure"], "depart": c["depart"], "arrivee": c["arrivee"],
-                    "etat": etat, "envoye": bool(state["courses"].get(c.get("retour_id") or ""))})
+                    "etat": etat, "envoye": bool(state["courses"].get(c.get("retour_id") or "")),
+                    "ouverte": c["statut"] == "open", "pris": bool(pris)})
     return res[:15]
 
 
