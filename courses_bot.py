@@ -86,7 +86,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("courses_bot")
 
 state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}, "libres": {}, "positions": {}, "astuces": {}, "pos_rappel": {},
-         "boutons": {}, "claviers_jour": {}, "epingles": {}, "tableaux": {}}
+         "boutons": {}, "claviers_jour": {}, "epingles": {}, "lots": {}}
 INVITATION_SECONDS = 60  # durée d'affichage du bouton « Ouvrir le formulaire »
 
 
@@ -527,7 +527,7 @@ def maj_carte(c):
 def _maj_carte(c):
     global COPIER_LABEL
     if not c.get("message_id"):
-        maj_tableau()
+        maj_lot(c.get("lot"))
         return
     d = api("editMessageText", chat_id=groupe(), message_id=c["message_id"],
             text=texte_course(c), parse_mode="HTML", reply_markup=clavier_course(c),
@@ -550,7 +550,6 @@ def _maj_carte(c):
 # 2e appui dans les 10 s = on prend la course.
 
 CONFIRMATION_SECONDES = 10
-TABLEAU_GARDE_SECONDES = 30 * 60   # une course fermée reste visible 30 min sur le tableau
 ANNULATION_SECONDES = 60
 _confirmations = {}   # (uid, action, ref) -> horodatage du 1er appui
 _mode_annuler = {}    # uid admin -> horodatage
@@ -597,35 +596,6 @@ def copie_de(c):
     return state["courses"].get(c.get("transfert_vers") or "")
 
 
-def sur_tableau(c, now=None):
-    now = now or time.time()
-    if c["statut"] == "open":
-        return True
-    copie = copie_de(c) if c["statut"] == "transferee" else None
-    if copie and copie["statut"] == "open":
-        return True
-    ferme = (copie or c).get("ferme_ts") or c.get("ferme_ts") or c["cree_ts"]
-    return now - ferme < TABLEAU_GARDE_SECONDES
-
-
-def ligne_tableau(c):
-    trajet = f"{echapper_rien(c['heure'])} · {adresse_courte(c['depart'])} → {adresse_courte(c['arrivee'])}"
-    s, copie = c["statut"], copie_de(c)
-    if s == "open":
-        return f"✅ {trajet}"
-    if s == "prise":
-        return f"✔️ {prenom(c['pris_par_nom'])} · {trajet}"
-    if s == "transferee":
-        if copie and copie["statut"] == "prise":
-            return f"✔️ {prenom(copie['pris_par_nom'])} (ET) · {trajet}"
-        if copie and copie["statut"] == "open":
-            return f"↪️ sur ET · {trajet}"
-        return f"⌛ ET · {trajet}"
-    if s == "trouvee":
-        return f"🤝 ailleurs · {trajet}"
-    return {"annulee": "🗑", "arretee": "⏹", "expiree": "⌛"}.get(s, "•") + f" {trajet}"
-
-
 def echapper_rien(t):
     return str(t or "")
 
@@ -648,7 +618,8 @@ def statut_tableau(c):
 
 
 def bloc_tableau(n, c, complet=True):
-    l = [f"<b>{n} · {echapper(c['heure'])}</b> · <i>{echapper(c['donneur_nom'])}</i>"]
+    num = f"{n} · " if n else ""
+    l = [f"<b>{num}{echapper(c['heure'])}</b> · <i>{echapper(c['donneur_nom'])}</i>"]
     if complet:
         l += [f"📍 {adresse_cliquable(c['depart'])}", f"🏁 {adresse_cliquable(c['arrivee'])}"]
         if c.get("commentaire"):
@@ -661,65 +632,60 @@ def bloc_tableau(n, c, complet=True):
     return "\n".join(l)
 
 
-def texte_tableau(courses):
-    if not courses:
-        return "🚕 <b>Courses à prendre</b> · aucune pour le moment"
-    blocs = [bloc_tableau(i, c) for i, c in enumerate(courses, 1)]
-    texte = "🚕 <b>Courses à prendre</b>\n\n" + "\n\n".join(blocs)
+def texte_lot(courses):
+    """Un message par envoi : la course seule, ou plusieurs courses numérotées."""
+    if len(courses) == 1:
+        return bloc_tableau(0, courses[0])
+    texte = "\n\n".join(bloc_tableau(i, c) for i, c in enumerate(courses, 1))
     if len(texte) > 3900:
         # Trop long pour un message : les courses fermées passent sur une seule ligne.
-        blocs = [bloc_tableau(i, c, complet=(c["statut"] == "open")) for i, c in enumerate(courses, 1)]
-        texte = "🚕 <b>Courses à prendre</b>\n\n" + "\n\n".join(blocs)
+        texte = "\n\n".join(bloc_tableau(i, c, complet=(c["statut"] == "open")) for i, c in enumerate(courses, 1))
     return texte[:4096]
 
 
 def bouton_tableau(n, c):
     s, copie = c["statut"], copie_de(c)
+    num = f" {n}" if n else ""
     if s == "open":
-        t = f"✅ Prendre {n}"
+        t = f"✅ Prendre{num}"
     elif s == "prise":
-        t = f"✔️ {n} {prenom(c['pris_par_nom'])}"
+        t = f"✔️{num} {prenom(c['pris_par_nom'])}"
     elif s == "transferee":
-        t = (f"✔️ {n} {prenom(copie['pris_par_nom'])}" if copie and copie["statut"] == "prise"
-             else f"↪️ {n} ET" if copie and copie["statut"] == "open" else f"⌛ {n} ET")
+        t = (f"✔️{num} {prenom(copie['pris_par_nom'])}" if copie and copie["statut"] == "prise"
+             else f"↪️{num} ET" if copie and copie["statut"] == "open" else f"⌛{num} ET")
     else:
-        t = {"trouvee": "🤝", "annulee": "🗑", "arretee": "⏹", "expiree": "⌛"}.get(s, "•") + f" {n}"
+        t = {"trouvee": "🤝 ailleurs", "annulee": "🗑", "arretee": "⏹", "expiree": "⌛"}.get(s, "•") + num
     return {"text": t, "callback_data": f"t:{c['id']}"}
 
 
-def clavier_tableau(courses):
-    boutons = [bouton_tableau(i, c) for i, c in enumerate(courses, 1)]
+def clavier_lot(lot, courses):
+    seul = len(courses) == 1
+    boutons = [bouton_tableau(0 if seul else i, c) for i, c in enumerate(courses, 1)]
     lignes = [boutons[i:i + 3] for i in range(0, len(boutons), 3)]
     if any(c["statut"] == "open" for c in courses):
-        bas = [{"text": "🤝 Prise ailleurs", "callback_data": "tann:"}]
+        bas = [{"text": "🤝 Prise ailleurs", "callback_data": f"tann:{lot}"}]
         if est_web():
-            bas.insert(0, {"text": "↪️ Libres → EasyTaxi", "callback_data": "tall:"})
+            bas.insert(0, {"text": "↪️ EasyTaxi" if seul else "↪️ Libres → EasyTaxi", "callback_data": f"tall:{lot}"})
         lignes.append(bas)
     return {"inline_keyboard": lignes}
 
 
-def courses_tableau():
-    now = time.time()
-    l = [c for c in state["courses"].values() if str(c.get("chat")) == str(groupe()) and sur_tableau(c, now)]
-    return sorted(l, key=lambda c: c["cree_ts"])
+def courses_lot(lot):
+    return sorted((c for c in state["courses"].values() if lot and c.get("lot") == lot), key=lambda c: c["cree_ts"])
 
 
-def maj_tableau(reposter=False):
-    """Met à jour le tableau du groupe courant ; reposter=True le remet tout en bas (nouvelle course)."""
-    tab = state.setdefault("tableaux", {})
-    courses = courses_tableau()
-    texte, clavier = texte_tableau(courses), clavier_tableau(courses)
-    ancien = tab.get(groupe())
-    if ancien and not reposter:
-        d = api("editMessageText", chat_id=groupe(), message_id=ancien, text=texte, parse_mode="HTML",
-                reply_markup=clavier, link_preview_options={"is_disabled": True})
-        if d.get("ok") or "not modified" in str(d.get("description", "")):
-            return
-    mid = envoyer(texte, reply_markup=clavier, silencieux=not reposter)
-    if mid:
-        tab[groupe()] = mid
-        if ancien and ancien != mid:
-            supprimer(ancien)
+def maj_lot(lot, nouveau=False, silencieux=False):
+    """Met à jour (ou poste, si nouveau) le message d'un envoi, dans le groupe courant."""
+    courses = courses_lot(lot)
+    if not courses:
+        return
+    info = state.setdefault("lots", {}).setdefault(lot, {"chat": str(groupe()), "mid": None})
+    texte, clavier = texte_lot(courses), clavier_lot(lot, courses)
+    if info.get("mid") and not nouveau:
+        api("editMessageText", chat_id=info["chat"], message_id=info["mid"], text=texte, parse_mode="HTML",
+            reply_markup=clavier, link_preview_options={"is_disabled": True})
+        return
+    info["mid"] = envoyer(texte, reply_markup=clavier, silencieux=silencieux)
 
 
 def detail_course(c):
@@ -758,18 +724,19 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
         alerte(cb_id, "Prise ailleurs (60 s) : touche deux fois le bouton de la course concernée.")
         return
     if action == "tall":
-        libres = [c for c in courses_tableau() if c["statut"] == "open"]
+        libres = [c for c in courses_lot(ref) if c["statut"] == "open"]
         if not est_admin(uid):
             alerte(cb_id, "Réservé aux administrateurs.")
         elif not libres:
             alerte(cb_id, "Aucune course libre à envoyer.")
-        elif not deuxieme_appui(uid, "tall", ""):
+        elif not deuxieme_appui(uid, "tall", ref):
             alerte(cb_id, f"Envoyer {len(libres)} course(s) libre(s) sur {NOM_GROUPE} ?\n\n"
                           f"Touche à nouveau le bouton dans les {CONFIRMATION_SECONDES} s pour confirmer.")
         else:
-            n = sum(1 for c in libres if transferer(c, user, sans_tableau=True))
+            lot_copie = str(state["next_id"])
+            n = sum(1 for c in libres if transferer(c, user, sans_tableau=True, lot=lot_copie))
             with dans(CHAT_ID):
-                maj_tableau(reposter=True)   # une seule notification dans EasyTaxi Group
+                maj_lot(lot_copie, nouveau=True)   # un seul message dans EasyTaxi Group
             repondre_callback(cb_id, f"{n} course(s) envoyée(s) sur {NOM_GROUPE} ✅")
         return
     c = state["courses"].get(ref)
@@ -870,10 +837,11 @@ def _publier_course(w):
         "rappel_id": None,
     }
     if True:
-        # Les deux groupes : pas de carte, une ligne de plus sur le tableau (remis en bas du groupe).
+        # Les deux groupes : pas de carte, un message par envoi (lot), mis à jour sur place.
+        c["lot"] = w.get("lot") or cid
         state["courses"][cid] = c
         if not w.get("sans_tableau"):
-            maj_tableau(reposter=True)
+            maj_lot(c["lot"], nouveau=True, silencieux=bool(w.get("silencieux")))
         return c
     # Plusieurs courses d'un coup : seule la 1re fait sonner les téléphones.
     mid = envoyer(texte_course(c), reply_markup=clavier_course(c), silencieux=bool(w.get("silencieux")))
@@ -1369,10 +1337,11 @@ def creer_course_depuis_formulaire(corps):
                           "depart": depart, "arrivee": arrivee, "commentaire": commentaire, "chat": chat,
                           "sans_tableau": True})
     with LOCK, dans(chat):
-        for i, w in enumerate(a_publier):
-            w["silencieux"] = i > 0
+        lot = str(state["next_id"])
+        for w in a_publier:
+            w["lot"] = lot
             publier_course(w)
-        maj_tableau(reposter=True)   # une seule notification pour tout le lot
+        maj_lot(lot, nouveau=True)   # un seul message (et une seule notification) pour l'envoi
         retirer_invitation(user["id"])
         retirer_libre(user["id"])
         sauver_etat()
@@ -1547,12 +1516,12 @@ def traiter_callback(cb):
         traiter_callback_groupe(cb, cb_id, user, uid, nom, msg)
 
 
-def transferer(c, user, sans_tableau=False):
+def transferer(c, user, sans_tableau=False, lot=None):
     """Easy Web -> groupe principal : une course neuve, postée au nom de celui qui transfère,
     sans les refus ni rien qui montre qu'elle vient d'ailleurs."""
     w = {"uid": user["id"], "nom": nom_affiche(user), "heure": c["heure"], "demain": c.get("demain"),
          "depart": c["depart"], "arrivee": c["arrivee"], "commentaire": c.get("commentaire", ""),
-         "chat": CHAT_ID, "source": c["id"], "sans_tableau": sans_tableau}
+         "chat": CHAT_ID, "source": c["id"], "sans_tableau": sans_tableau, "lot": lot}
     copie = publier_course(w)
     if not copie:
         return False
@@ -1705,17 +1674,14 @@ def maintenance():
 def entretenir_course(cid, c, now):
     change = False
     if not c.get("message_id"):
-        # Tableau : pas de rappels ; on retire les lignes fermées depuis 30 min.
+        # Message par envoi : pas de rappels ; on oublie les courses au bout de 7 jours.
         if c["statut"] == "open" and now - c["cree_ts"] > (36 * 3600 if c.get("demain") else EXPIRATION_MINUTES * 60):
             cloturer(c, "expiree")
             return True
-        visible = sur_tableau(c, now)
-        if c.get("affichee", True) and not visible:
-            c["affichee"] = False
-            maj_tableau()
-            change = True
-        if not visible and now - c["cree_ts"] > CONSERVATION_JOURS * 86400:
+        if c["statut"] != "open" and now - c["cree_ts"] > CONSERVATION_JOURS * 86400:
             del state["courses"][cid]
+            if not courses_lot(c.get("lot")):
+                state.setdefault("lots", {}).pop(c.get("lot"), None)
             change = True
         return change
     if True:
