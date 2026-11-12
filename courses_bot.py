@@ -690,11 +690,18 @@ def bouton_ligne(c, avec_lien=True):
 def clavier_lot(lot, courses, avec_lien=True):
     seul = len(courses) == 1
     lignes = [[bouton_ligne(c, avec_lien)] for c in courses]
-    if est_web() and any(c["statut"] == "open" for c in courses):
-        bas = []
-        if True:
-            bas.insert(0, {"text": "↪️ EasyTaxi" if seul else "↪️ Libres → EasyTaxi", "callback_data": f"tall:{lot}"})
-        lignes.append(bas)
+    libres = [c for c in courses if c["statut"] == "open"]
+    if libres:
+        # Copier pour coller dans un autre groupe : un bouton par course libre (repérée par son heure).
+        copies = [{"text": "⧉ Copier" if len(libres) == 1 else f"⧉ {c['heure'].replace('demain ', '')}",
+                   "copy_text": {"text": texte_copie(c)}} for c in libres]
+        lignes += [copies[i:i + 3] for i in range(0, len(copies), 3)]
+    if est_web() and libres:
+        et = {"text": "↪️ EasyTaxi" if len(libres) == 1 else "↪️ Libres → EasyTaxi", "callback_data": f"tall:{lot}"}
+        if len(libres) == 1:
+            lignes[-1].append(et)   # « ⧉ Copier » et « ↪️ EasyTaxi » sur la même ligne
+        else:
+            lignes.append([et])
     return {"inline_keyboard": lignes}
 
 
@@ -725,10 +732,20 @@ def maj_lot(lot, nouveau=False, silencieux=False):
 
 
 def detail_course(c):
-    l = [f"{c['heure']} · {c['donneur_nom']}", f"📍 {c['depart']}", f"🏁 {c['arrivee']}"]
+    l = [f"🕐 {c['heure']}", f"📍 {c['depart']}", f"🏁 {c['arrivee']}"]
     if c.get("commentaire"):
         l.append(f"💬 {c['commentaire']}")
+    l.append(f"👤 Donnée par {c['donneur_nom']}")
     return "\n".join(l)
+
+
+def fiche(titre, c, pied=""):
+    """Fenêtre d'une course (200 caractères max) : on raccourcit le détail, jamais le titre ni la consigne."""
+    place = 200 - len(titre) - len(pied) - 4
+    det = re.sub(r"\b\d{5}\s+", "", detail_course(c))   # sans code postal, pour garder la place
+    if len(det) > place:
+        det = det[:max(0, place - 1)] + "…"
+    return f"{titre}\n\n{det}" + (f"\n\n{pied}" if pied else "")
 
 
 def alerte(cb_id, texte):
@@ -782,29 +799,28 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
     if c["statut"] != "open":
         copie = copie_de(c)
         if c["statut"] == "prise":
-            info = f"Prise par {c['pris_par_nom']}"
+            info = f"✔️ Prise par {c['pris_par_nom']}"
         elif c["statut"] == "transferee" and copie and copie["statut"] == "prise":
-            info = f"Prise par {copie['pris_par_nom']} sur {NOM_GROUPE}"
+            info = f"✔️ Prise par {copie['pris_par_nom']} sur {NOM_GROUPE}"
         elif c["statut"] == "transferee":
             info = f"Envoyée sur {NOM_GROUPE}"
         else:
             info = {"trouvee": "Trouvée ailleurs", "annulee": "Annulée", "arretee": "Arrêtée",
                     "expiree": "Personne ne l'a prise"}.get(c["statut"], "Clôturée")
-        alerte(cb_id, f"{info}\n\n{detail_course(c)}")
+        alerte(cb_id, fiche(info, c))
         return
     annuler = uid == c["donneur_id"] or (time.time() - _mode_annuler.get(uid, 0) < ANNULATION_SECONDES and est_admin(uid))
     if annuler:
         if not deuxieme_appui(uid, "ann", ref):
-            alerte(cb_id, f"Prise ailleurs ?\n{detail_course(c)}\n\n"
-                          f"Touche à nouveau la ligne dans les {CONFIRMATION_SECONDES} s pour la retirer.")
+            alerte(cb_id, fiche("🤝 Ta course a été prise ailleurs ?", c,
+                                "👉 Touche encore la ligne (10 s) pour la retirer."))
             return
         _mode_annuler.pop(uid, None)
         cloturer(c, "trouvee")
         repondre_callback(cb_id, "C'est noté : prise ailleurs 🤝")
         return
     if not deuxieme_appui(uid, "prendre", ref):
-        alerte(cb_id, f"Prendre cette course ?\n{detail_course(c)}\n\n"
-                      f"Touche à nouveau la ligne dans les {CONFIRMATION_SECONDES} s pour confirmer.")
+        alerte(cb_id, fiche("🚕 Prendre cette course ?", c, "👉 Touche encore la ligne (10 s) pour la prendre."))
         return
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
     c["pris_par_username"] = user.get("username")
