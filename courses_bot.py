@@ -94,7 +94,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("courses_bot")
 
 state = {"offset": 0, "next_id": 1, "courses": {}, "wizards": {}, "bouton_id": None, "invitations": {}, "libres": {}, "positions": {}, "astuces": {}, "pos_rappel": {},
-         "boutons": {}, "claviers_jour": {}, "epingles": {}, "lots": {}, "suivis": {}}
+         "boutons": {}, "claviers_jour": {}, "epingles": {}, "lots": {}, "suivis": {}, "caree_msg": {}}
 INVITATION_SECONDS = 60  # durée d'affichage du bouton « Ouvrir le formulaire »
 
 
@@ -673,7 +673,7 @@ def ligne_bulle(c):
         extra.append(echapper(c["donneur_nom"]))
     s, copie = c["statut"], copie_de(c)
     if s == "caree":
-        extra.append(f"📲 sur Caree par {echapper(c.get('caree_par') or '?')}")
+        extra.append(f"📲 sur Caree par {echapper(c.get('caree_par') or '?')} {'✅' if c.get('caree_fait') else '⏳'}")
     if s == "transferee" and not (copie and copie["statut"] == "prise"):
         extra.append(f"sur {echapper(NOM_GROUPE)}" if copie and copie["statut"] == "open" else f"fermée sur {echapper(NOM_GROUPE)}")
     elif s in ("trouvee", "annulee", "arretee", "expiree"):
@@ -725,7 +725,8 @@ def bouton_action(c, avec_lien=True, avec_style=True):
     if s == "open" and c.get("caree"):
         return {"text": "📲 Caree", "callback_data": cb}
     if s == "caree":
-        return {"text": f"📲 Caree · {prenom(c.get('caree_par'))}", "callback_data": cb}
+        return {"text": f"📲 Caree · {prenom(c.get('caree_par'))} {'✅' if c.get('caree_fait') else '⏳'}",
+                "callback_data": f"cf:{c['id']}" if not c.get("caree_fait") else cb}
     if s == "prise" and c.get("site") and c["site"].get("origine") == "client_tony" and not c.get("pris_par_id"):
         return {"text": "⭐ Tony", "callback_data": cb}
     if s == "open":
@@ -909,9 +910,7 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
         return
     if c.get("caree"):
         # Réservation du site pour un autre jour : celui qui touche la rentre dans Caree.
-        c["caree_par"] = nom
-        cloturer(c, "caree")
-        signaler_site(c, nom)
+        prendre_caree(c, uid, nom)
         repondre_callback(cb_id)
         return
     # Les infos sont dans la bulle : un seul appui suffit pour prendre la course.
@@ -1110,7 +1109,7 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .lot span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lot small{color:var(--hint);font-weight:600}
 .lot button{border:0;background:transparent;color:var(--hint);font-size:18px;padding:0 4px}
 .onglets{display:flex;gap:6px;background:var(--card);border-radius:14px;padding:4px;margin:0 0 6px}
-.onglets button{flex:1;border:0;border-radius:11px;padding:10px;background:transparent;color:var(--hint);font:600 15px "Poppins",-apple-system,Roboto,sans-serif}
+.onglets button{flex:1;border:0;border-radius:11px;padding:10px 4px;background:transparent;color:var(--hint);font:600 13px "Poppins",-apple-system,Roboto,sans-serif}
 .onglets button.actif{background:var(--btn);color:var(--btnfg)}
 .ret{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:14px;padding:12px;margin-top:10px;font-size:14px;line-height:1.35}
 .ret span{flex:1;min-width:0}.ret small{display:block;color:var(--hint);margin-top:3px}
@@ -1120,12 +1119,19 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .ret .lien{background:#16a34a}
 .ret .url{width:100%;display:flex;gap:8px;align-items:center;background:var(--bg);border-radius:10px;padding:8px 10px;font-size:13px;word-break:break-all}
 .ret .url span{flex:1}.ret .url button{background:transparent;color:var(--btn);padding:4px 6px}
+.cl{display:flex;align-items:center;gap:8px;padding:10px 2px;border-bottom:1px solid var(--line);font-size:14px;line-height:1.3}
+.cl span{flex:1;min-width:0}.cl small{display:block;color:var(--hint);font-size:12px;margin-top:2px}
+.cl button{flex:none;width:42px;height:42px;border:0;border-radius:11px;background:var(--card);font-size:17px}
+.cl .f{background:#16a34a}.cl .p{background:#b45309}
+.ch{font-size:11px;font-weight:700;letter-spacing:.8px;color:var(--hint);margin:16px 2px 2px}
+#msg-caree{margin-top:14px;color:var(--hint);text-align:center;font-size:15px}
 #msg-ret{margin-top:14px;color:var(--hint);text-align:center;font-size:15px}
 #msg{margin-top:14px;color:#e5484d;min-height:22px;font-size:15px;text-align:center}
 </style></head><body>
 <h1>Donner une course</h1>
 <div class="trait"></div>
-<div class="onglets"><button type="button" id="o-nouv" class="actif">Nouvelle course</button><button type="button" id="o-ret">📋 Mes courses</button></div>
+<div class="onglets"><button type="button" id="o-nouv" class="actif">Nouvelle course</button><button type="button" id="o-ret">📋 Mes courses</button><button type="button" id="o-caree">📲 Caree</button></div>
+<div id="p-caree" style="display:none"><div id="liste-caree"></div><div id="msg-caree"></div></div>
 <div id="p-ret" style="display:none"><div id="liste-ret"></div><div id="msg-ret"></div></div>
 <div id="p-nouv">
 <div id="lot"></div>
@@ -1404,13 +1410,47 @@ function envoyer(){
 }
 $("ok").addEventListener("click",envoyer);
 /* Onglet « Retour » : mes courses du jour, un appui envoie le retour en « maintenant » */
-function onglet(ret){
-  $("o-nouv").classList.toggle("actif",!ret);$("o-ret").classList.toggle("actif",ret);
-  $("p-nouv").style.display=ret?"none":"";$("p-ret").style.display=ret?"":"none";
-  if(ret)chargerRetours();
+function onglet(n){
+  ["nouv","ret","caree"].forEach(function(k){$("o-"+k).classList.toggle("actif",k===n);$("p-"+k).style.display=k===n?"":"none";});
+  if(n==="ret")chargerRetours();
+  if(n==="caree")chargerCaree();
 }
-$("o-nouv").addEventListener("click",function(){tap();onglet(false);});
-$("o-ret").addEventListener("click",function(){tap();onglet(true);});
+$("o-nouv").addEventListener("click",function(){tap();onglet("nouv");});
+$("o-ret").addEventListener("click",function(){tap();onglet("ret");});
+$("o-caree").addEventListener("click",function(){tap();onglet("caree");});
+/* Onglet « Caree » : mes courses à rentrer (✅ au bout de la ligne) et celles que personne n'a prises */
+function apiCaree(chemin,id,ok){
+  fetch(chemin,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData,id:id})})
+    .then(function(r){return r.json();}).then(function(k){if(k.ok){try{tg.HapticFeedback.notificationOccurred("success");}catch(e){}ok();}else{$("msg-caree").textContent=k.erreur||"Erreur, réessaie.";}})
+    .catch(function(){$("msg-caree").textContent="Pas de connexion, réessaie.";});
+}
+function copierTexte(t,b){
+  var fait=function(){b.textContent="✔️";};
+  if(navigator.clipboard){navigator.clipboard.writeText(t).then(fait,function(){prompt("Copie :",t);});}else{prompt("Copie :",t);}
+}
+function ligneCaree(c,mienne){
+  var d=document.createElement("div");d.className="cl";
+  var s=document.createElement("span");var b0=document.createElement("b");b0.textContent=c.heure+" ";s.appendChild(b0);
+  s.appendChild(document.createTextNode(court(c.depart)+" → "+court(c.arrivee)));
+  var sm=document.createElement("small");sm.textContent=c.depart+" → "+c.arrivee+(c.infos?" · "+c.infos:"");s.appendChild(sm);
+  var bc=document.createElement("button");bc.type="button";bc.textContent="⧉";bc.addEventListener("click",function(){tap();copierTexte(c.copie,bc);});
+  var ba=document.createElement("button");ba.type="button";ba.className=mienne?"f":"p";ba.textContent=mienne?"✅":"📲";
+  ba.addEventListener("click",function(){tap();ba.disabled=true;apiCaree(mienne?"/api/caree_fait":"/api/caree_prendre",c.id,chargerCaree);});
+  d.appendChild(s);d.appendChild(bc);d.appendChild(ba);return d;
+}
+function chargerCaree(){
+  $("msg-caree").textContent="Chargement…";$("liste-caree").innerHTML="";
+  fetch("/api/caree",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData})})
+    .then(function(r){return r.json();}).then(function(j){
+      if(!j.ok){$("msg-caree").textContent=j.erreur||"Erreur, réessaie.";return;}
+      $("msg-caree").textContent=(j.miennes.length||j.libres.length)?"⧉ copier · ✅ fait dans Caree · 📲 je la prends pour Caree":"Rien à rentrer dans Caree 👍";
+      var z=$("liste-caree");
+      if(j.miennes.length){var h=document.createElement("div");h.className="ch";h.textContent="À RENTRER PAR MOI";z.appendChild(h);
+        j.miennes.forEach(function(c){z.appendChild(ligneCaree(c,true));});}
+      if(j.libres.length){var h2=document.createElement("div");h2.className="ch";h2.textContent="PERSONNE NE L'A PRISE";z.appendChild(h2);
+        j.libres.forEach(function(c){z.appendChild(ligneCaree(c,false));});}
+    }).catch(function(){$("msg-caree").textContent="Pas de connexion, réessaie.";});
+}
 function court(a){return String(a||"").split(",")[0];}
 function chargerRetours(){
   $("msg-ret").textContent="Chargement…";$("liste-ret").innerHTML="";
@@ -1770,6 +1810,42 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                 logger.exception("Position libre")
                 self._repondre(400, json.dumps({"ok": False, "erreur": "Position illisible."}))
             return
+        if self.path in ("/api/caree", "/api/caree_fait", "/api/caree_prendre"):
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                corps = json.loads(self.rfile.read(n).decode("utf-8")) if 0 < n <= 10000 else {}
+                user = valider_init_data(str(corps.get("initData", "")))
+                if not user or not WEB_CHAT_ID or not membre_de(user["id"], WEB_CHAT_ID):
+                    self._repondre(403, json.dumps({"ok": False, "erreur": "Réservé aux membres d'Easy Web."}))
+                    return
+                with LOCK:
+                    if self.path == "/api/caree":
+                        a_rentrer, libres = courses_caree(WEB_CHAT_ID)
+                        def vue(c):
+                            return {"id": c["id"], "heure": c["heure"], "depart": c["depart"], "arrivee": c["arrivee"],
+                                    "infos": c.get("commentaire", ""), "copie": texte_copie(c)}
+                        rep_ = {"ok": True, "miennes": [vue(c) for c in a_rentrer if c.get("caree_par_id") == user["id"]],
+                                "libres": [vue(c) for c in libres]}
+                    else:
+                        c = state["courses"].get(str(corps.get("id", "")))
+                        if not c or str(c.get("chat")) != str(WEB_CHAT_ID) or not c.get("caree"):
+                            rep_ = {"ok": False, "erreur": "Course introuvable."}
+                        elif self.path == "/api/caree_fait":
+                            with dans(WEB_CHAT_ID):
+                                ok, msg = caree_fait(c, user["id"])
+                            rep_ = {"ok": ok, "erreur": msg}
+                        elif c["statut"] != "open":
+                            rep_ = {"ok": False, "erreur": "Déjà prise par quelqu'un."}
+                        else:
+                            with dans(WEB_CHAT_ID):
+                                prendre_caree(c, user["id"], nom_affiche(user))
+                            rep_ = {"ok": True}
+                        sauver_etat()
+                self._repondre(200, json.dumps(rep_, ensure_ascii=False))
+            except Exception:
+                logger.exception("Caree")
+                self._repondre(400, json.dumps({"ok": False, "erreur": "Requête invalide."}))
+            return
         if self.path in ("/api/mes_courses", "/api/retour", "/api/lien"):
             try:
                 n = int(self.headers.get("Content-Length", "0"))
@@ -1929,6 +2005,21 @@ def traiter_callback(cb):
     uid = user.get("id")
     nom = nom_affiche(user)
     msg = cb.get("message") or {}
+    action, _, ref = (cb.get("data") or "").partition(":")
+    if action == "cf":
+        # « C'est fait dans Caree » : depuis le groupe ou depuis le rappel en privé.
+        c = state["courses"].get(ref)
+        if not c:
+            repondre_callback(cb_id, "Course introuvable.")
+            return
+        with dans(c.get("chat")):
+            ok, texte = caree_fait(c, uid)
+        repondre_callback(cb_id, texte)
+        if ok and msg.get("chat", {}).get("type") == "private":
+            api("editMessageText", chat_id=msg["chat"]["id"], message_id=msg["message_id"],
+                text=f"✅ Rentrée dans Caree : {echapper(c['heure'])} {echapper(adresse_courte(c['depart']))} → "
+                     f"{echapper(adresse_courte(c['arrivee']))}", parse_mode="HTML")
+        return
     if not est_groupe(msg.get("chat", {}).get("id")):
         repondre_callback(cb_id)
         return
@@ -1950,6 +2041,102 @@ def signaler_site(c, nom):
 
 
 JOURS_COURTS = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
+CAREE_RAPPEL_PREMIER = 30 * 60
+CAREE_RAPPEL_SUIVANTS = 2 * 3600
+
+
+def prendre_caree(c, uid, nom):
+    c["caree_par"], c["caree_par_id"], c["caree_ts"], c["caree_fait"] = nom, uid, time.time(), False
+    cloturer(c, "caree")
+    signaler_site(c, nom)
+    maj_liste_caree(c.get("chat"), reposter=True)
+
+
+def caree_fait(c, uid):
+    """Retourne (ok, message)."""
+    if c["statut"] != "caree":
+        return False, "Cette course n'est pas à rentrer dans Caree."
+    if c.get("caree_fait"):
+        return False, "Déjà notée ✅"
+    if uid != c.get("caree_par_id") and not est_admin(uid):
+        return False, f"C'est la course de {prenom(c.get('caree_par'))}."
+    c["caree_fait"] = True
+    maj_carte(c)
+    maj_liste_caree(c.get("chat"))
+    return True, "✅ Notée : rentrée dans Caree."
+
+
+def courses_caree(chat):
+    """(à rentrer, pas encore prises) pour ce groupe."""
+    toutes = sorted((c for c in state["courses"].values() if str(c.get("chat")) == str(chat) and c.get("caree")),
+                    key=lambda c: (c.get("jour") or "", c["cree_ts"]))
+    a_rentrer = [c for c in toutes if c["statut"] == "caree" and not c.get("caree_fait")]
+    libres = [c for c in toutes if c["statut"] == "open"]
+    return a_rentrer, libres
+
+
+def heure_courte(c):
+    return c["heure"].replace("demain ", "dem. ").replace("aujourd'hui ", "")
+
+
+def maj_liste_caree(chat, reposter=False):
+    """Message « 📲 À rentrer dans Caree » : une ligne-bouton par course ; mis à jour sur place,
+    remis en bas du groupe quand une course y entre, supprimé quand tout est fait."""
+    if not chat:
+        return
+    a_rentrer, libres = courses_caree(chat)
+    info = state.setdefault("caree_msg", {})
+    ancien = info.get(str(chat))
+    with dans(chat):
+        if not a_rentrer and not libres:
+            if ancien:
+                supprimer(ancien)
+                info.pop(str(chat), None)
+            return
+        lignes = [[{"text": f"⏳ {heure_courte(c)} {adresse_courte(c['depart'])} → {adresse_courte(c['arrivee'])} · "
+                            f"{prenom(c.get('caree_par'))}", "callback_data": f"cf:{c['id']}"}] for c in a_rentrer[:12]]
+        lignes += [[{"text": f"🟠 {heure_courte(c)} {adresse_courte(c['depart'])} → {adresse_courte(c['arrivee'])} · à prendre",
+                     "callback_data": f"t:{c['id']}"}] for c in libres[:6]]
+        texte = "📲 <b>À rentrer dans Caree</b> · touche ta ligne quand c'est fait"
+        clavier = {"inline_keyboard": lignes}
+        if ancien and not reposter:
+            d = api("editMessageText", chat_id=chat, message_id=ancien, text=texte, parse_mode="HTML", reply_markup=clavier)
+            if d.get("ok") or "not modified" in str(d.get("description", "")):
+                return
+        mid = envoyer(texte, reply_markup=clavier, silencieux=True)
+        if mid:
+            info[str(chat)] = mid
+            if ancien and ancien != mid:
+                supprimer(ancien)
+
+
+def rappels_caree(now):
+    """Rappel en privé 30 min après l'appui sur « Caree » si ce n'est pas fait, puis toutes les 2 h (8 h - 21 h)."""
+    h = datetime.now(TZ).hour
+    if not 8 <= h < 21:
+        return False
+    change = False
+    for c in state["courses"].values():
+        if c["statut"] != "caree" or c.get("caree_fait") or not c.get("caree_par_id"):
+            continue
+        dernier = c.get("caree_rappel_ts")
+        if (not dernier and now - c["caree_ts"] < CAREE_RAPPEL_PREMIER) or (dernier and now - dernier < CAREE_RAPPEL_SUIVANTS):
+            continue
+        c["caree_rappel_ts"] = now
+        change = True
+        d = api("sendMessage", chat_id=c["caree_par_id"], parse_mode="HTML",
+                text=(f"⏰ <b>Pense à Caree !</b>\n{echapper(c['heure'])} · {echapper(c['depart'])} → "
+                      f"{echapper(c['arrivee'])}" + (f" · {echapper(c['commentaire'])}" if c.get("commentaire") else "")),
+                reply_markup={"inline_keyboard": [[{"text": "Copier", "copy_text": {"text": texte_copie(c)}},
+                                                   {"text": "✅ C'est fait", "callback_data": f"cf:{c['id']}"}]]},
+                link_preview_options={"is_disabled": True})
+        if not d.get("ok") and not c.get("caree_rappel_groupe"):
+            # Pas de conversation privée avec le bot : un petit rappel dans le groupe, une seule fois.
+            c["caree_rappel_groupe"] = True
+            with dans(c.get("chat")):
+                envoyer(f"⏰ {mention(c['caree_par_id'], c.get('caree_par') or '?')}, pense à rentrer la course de "
+                        f"{echapper(c['heure'])} dans Caree (puis touche ta ligne ⏳).", silencieux=True)
+    return change
 
 
 def recevoir_site(corps):
@@ -1995,6 +2182,8 @@ def recevoir_site(corps):
         return 400, {"ok": False}
     with LOCK, dans(WEB_CHAT_ID):
         publier_course(w)
+        if w["caree"] and not w["deja_tony"]:
+            maj_liste_caree(WEB_CHAT_ID)
         sauver_etat()
     return 200, {"ok": True}
 
@@ -2387,6 +2576,7 @@ def maintenance():
     for cid, c in list(state["courses"].items()):
         with dans(c.get("chat")):
             change = entretenir_course(cid, c, now) or change
+    change = rappels_caree(now) or change
     return change
 
 
@@ -2411,6 +2601,8 @@ def entretenir_course(cid, c, now):
             now - c["cree_ts"] > (36 * 3600 if c.get("demain") else EXPIRATION_MINUTES * 60)
         if c["statut"] == "open" and not c.get("tirage_gagnant") and trop_vieille:
             cloturer(c, "expiree")
+            if c.get("caree"):
+                maj_liste_caree(c.get("chat"))
             return True
         if c["statut"] != "open" and now - c["cree_ts"] > CONSERVATION_JOURS * 86400:
             del state["courses"][cid]
