@@ -2673,8 +2673,12 @@ def main():
     demarrer_serveur_web()
     logger.info("Bot de courses démarré.")
     try:
-        envoyer_clavier()
-        if WEB_CHAT_ID:
+        # Avec la mémoire (volume Railway), pas de message « Boutons actifs » à chaque redémarrage :
+        # seulement s'il n'a pas déjà été posé aujourd'hui (sinon, celui de 6 h suffit).
+        jour = datetime.now(TZ).strftime("%Y-%m-%d")
+        if state.get("clavier_jour") != jour:
+            envoyer_clavier()
+        if WEB_CHAT_ID and state.setdefault("claviers_jour", {}).get(WEB_CHAT_ID) != jour:
             with dans(WEB_CHAT_ID):
                 envoyer_clavier()
     except Exception:
