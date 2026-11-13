@@ -693,6 +693,11 @@ def ligne_bulle(c):
     s, copie = c["statut"], copie_de(c)
     if s == "caree":
         extra.append(f"📲 sur Caree par {echapper(c.get('caree_par') or '?')} {'✅' if c.get('caree_fait') else '⏳'}")
+    pris = chauffeur_de(c)
+    if pris and pris.get("pris_par_id") and not pris.get("pris_par_username"):
+        # Pas de nom d'utilisateur Telegram : le bouton ne peut pas ouvrir sa conversation,
+        # mais son prénom écrit ici est cliquable (profil → Message).
+        extra.append(f"prise par {mention(pris['pris_par_id'], pris.get('pris_par_nom') or '?')}")
     if s == "transferee" and not (copie and copie["statut"] == "prise"):
         extra.append(f"sur {echapper(NOM_GROUPE)}" if copie and copie["statut"] == "open" else f"fermée sur {echapper(NOM_GROUPE)}")
     elif s in ("trouvee", "annulee", "arretee", "expiree"):
