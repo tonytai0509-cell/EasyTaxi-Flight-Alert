@@ -358,14 +358,19 @@ def epingler_formulaire():
         return
     # Après un redémarrage (état non conservé), on reprend le message déjà épinglé
     # au lieu d'en reposter un nouveau.
+    rang = [{"text": "Donner une course ›", "url": lien_formulaire()}]
+    if est_web():
+        # Accès à la liste « à rentrer dans Caree » (onglet du formulaire), sans rien afficher dans le groupe.
+        rang.append({"text": "📲 Caree", "url": APP_LINK + ("&" if "?" in APP_LINK else "?") + "startapp=webcaree"})
+    clavier = {"inline_keyboard": [rang]}
     epingle = ((api("getChat", chat_id=groupe()).get("result") or {}).get("pinned_message")) or {}
     boutons_ep = ((epingle.get("reply_markup") or {}).get("inline_keyboard")) or []
     if epingle.get("message_id") and any(b.get("url", "").startswith(APP_LINK) for r in boutons_ep for b in r):
         epingles[groupe()] = epingle["message_id"]
+        if boutons_ep != clavier["inline_keyboard"]:
+            api("editMessageReplyMarkup", chat_id=groupe(), message_id=epingle["message_id"], reply_markup=clavier)
         return
-    mid = envoyer("Nouvelle course : appuie sur le bouton.",
-                  reply_markup={"inline_keyboard": [[{"text": "Donner une course ›", "url": lien_formulaire()}]]},
-                  silencieux=True)
+    mid = envoyer("Nouvelle course : appuie sur le bouton.", reply_markup=clavier, silencieux=True)
     if mid:
         epingles[groupe()] = mid
         api("pinChatMessage", chat_id=groupe(), message_id=mid, disable_notification=True)
@@ -1418,6 +1423,7 @@ function onglet(n){
 $("o-nouv").addEventListener("click",function(){tap();onglet("nouv");});
 $("o-ret").addEventListener("click",function(){tap();onglet("ret");});
 $("o-caree").addEventListener("click",function(){tap();onglet("caree");});
+try{if((tg.initDataUnsafe||{}).start_param==="webcaree"){onglet("caree");}}catch(e){}
 /* Onglet « Caree » : mes courses à rentrer (✅ au bout de la ligne) et celles que personne n'a prises */
 function apiCaree(chemin,id,ok){
   fetch(chemin,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData,id:id})})
@@ -1686,7 +1692,7 @@ def creer_course_depuis_formulaire(corps):
     if not user:
         return 403, {"ok": False, "erreur": "Formulaire non reconnu. Rouvre-le depuis le groupe."}
     # Ouvert depuis Easy Web (startapp=web) : la course est publiée dans Easy Web.
-    chat = WEB_CHAT_ID if (user.get("_start") == "web" and WEB_CHAT_ID) else CHAT_ID
+    chat = WEB_CHAT_ID if (str(user.get("_start") or "").startswith("web") and WEB_CHAT_ID) else CHAT_ID
     if not membre_de(user["id"], chat):
         return 403, {"ok": False, "erreur": "Réservé aux membres du groupe."}
     # Plusieurs courses d'un coup (formulaire Easy Web) : « courses » = liste ; sinon une seule.
@@ -1851,7 +1857,7 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                 n = int(self.headers.get("Content-Length", "0"))
                 corps = json.loads(self.rfile.read(n).decode("utf-8")) if 0 < n <= 10000 else {}
                 user = valider_init_data(str(corps.get("initData", "")))
-                chat = WEB_CHAT_ID if (user and user.get("_start") == "web" and WEB_CHAT_ID) else CHAT_ID
+                chat = WEB_CHAT_ID if (user and str(user.get("_start") or "").startswith("web") and WEB_CHAT_ID) else CHAT_ID
                 if not user or not membre_de(user["id"], chat):
                     self._repondre(403, json.dumps({"ok": False, "erreur": "Réservé aux membres du groupe."}))
                     return
@@ -2080,32 +2086,11 @@ def heure_courte(c):
 
 
 def maj_liste_caree(chat, reposter=False):
-    """Message « 📲 À rentrer dans Caree » : une ligne-bouton par course ; mis à jour sur place,
-    remis en bas du groupe quand une course y entre, supprimé quand tout est fait."""
-    if not chat:
-        return
-    a_rentrer, _ = courses_caree(chat)   # les courses 🟠 pas encore prises ont déjà leur bulle : pas en double
-    info = state.setdefault("caree_msg", {})
-    ancien = info.get(str(chat))
-    with dans(chat):
-        if not a_rentrer:
-            if ancien:
-                supprimer(ancien)
-                info.pop(str(chat), None)
-            return
-        lignes = [[{"text": f"⏳ {heure_courte(c)} {adresse_courte(c['depart'])} → {adresse_courte(c['arrivee'])} · "
-                            f"{prenom(c.get('caree_par'))}", "callback_data": f"cf:{c['id']}"}] for c in a_rentrer[:12]]
-        texte = "📲 <b>À rentrer dans Caree</b> · touche ta ligne quand c'est fait"
-        clavier = {"inline_keyboard": lignes}
-        if ancien and not reposter:
-            d = api("editMessageText", chat_id=chat, message_id=ancien, text=texte, parse_mode="HTML", reply_markup=clavier)
-            if d.get("ok") or "not modified" in str(d.get("description", "")):
-                return
-        mid = envoyer(texte, reply_markup=clavier, silencieux=True)
-        if mid:
-            info[str(chat)] = mid
-            if ancien and ancien != mid:
-                supprimer(ancien)
+    """Plus de liste « À rentrer dans Caree » dans le groupe : elle est dans l'onglet « 📲 Caree »
+    du formulaire (bouton du message épinglé). On efface seulement un ancien message de liste."""
+    ancien = state.setdefault("caree_msg", {}).pop(str(chat), None) if chat else None
+    if ancien:
+        supprimer(ancien, chat)
 
 
 def rappels_caree(now):
@@ -2399,7 +2384,7 @@ def etat_suivi(jeton):
 
 def courses_pour_retour(user):
     """Onglet « Retour » du formulaire : les courses du jour données par cette personne, dans ce groupe."""
-    chat = WEB_CHAT_ID if (user.get("_start") == "web" and WEB_CHAT_ID) else CHAT_ID
+    chat = WEB_CHAT_ID if (str(user.get("_start") or "").startswith("web") and WEB_CHAT_ID) else CHAT_ID
     limite = time.time() - 20 * 3600
     res = []
     for c in sorted(state["courses"].values(), key=lambda c: -c["cree_ts"]):
