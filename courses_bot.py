@@ -104,7 +104,8 @@ def charger_etat():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        state.update({k: data[k] for k in state if k in data})
+        # Toute la mémoire (y compris les cases ajoutées en cours de route : clavier_jour, …).
+        state.update(data)
     except FileNotFoundError:
         pass
     except Exception as e:
