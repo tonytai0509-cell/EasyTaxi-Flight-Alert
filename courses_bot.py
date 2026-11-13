@@ -358,11 +358,9 @@ def epingler_formulaire():
         return
     # Après un redémarrage (état non conservé), on reprend le message déjà épinglé
     # au lieu d'en reposter un nouveau.
-    rang = [{"text": "Donner une course ›", "url": lien_formulaire()}]
-    if est_web():
-        # Accès à la liste « à rentrer dans Caree » (onglet du formulaire), sans rien afficher dans le groupe.
-        rang.append({"text": "📲 Caree", "url": APP_LINK + ("&" if "?" in APP_LINK else "?") + "startapp=webcaree"})
-    clavier = {"inline_keyboard": [rang]}
+    # Un seul bouton : Telegram ne l'affiche dans la barre épinglée (1 appui) que s'il est seul.
+    # La liste Caree est dans l'onglet « 📲 Caree » du formulaire.
+    clavier = {"inline_keyboard": [[{"text": "Donner une course ›", "url": lien_formulaire()}]]}
     epingle = ((api("getChat", chat_id=groupe()).get("result") or {}).get("pinned_message")) or {}
     boutons_ep = ((epingle.get("reply_markup") or {}).get("inline_keyboard")) or []
     if epingle.get("message_id") and any(b.get("url", "").startswith(APP_LINK) for r in boutons_ep for b in r):
