@@ -912,7 +912,7 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
         c["caree_par"] = nom
         cloturer(c, "caree")
         signaler_site(c, nom)
-        repondre_callback(cb_id, "📲 Notée pour toi : rentre-la dans Caree (« Copier » te donne le texte).", alerte=True)
+        repondre_callback(cb_id)
         return
     # Les infos sont dans la bulle : un seul appui suffit pour prendre la course.
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
