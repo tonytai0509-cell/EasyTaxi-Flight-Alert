@@ -1129,7 +1129,7 @@ input::placeholder{color:var(--hint);opacity:.7;font-weight:400}
 .cl button{flex:none;width:42px;height:42px;border:0;border-radius:11px;background:var(--card);font-size:17px}
 .cl .f{background:#16a34a}.cl .p{background:#b45309}
 .ch{font-size:11px;font-weight:700;letter-spacing:.8px;color:var(--hint);margin:16px 2px 2px}
-#msg-caree{margin-top:14px;color:var(--hint);text-align:center;font-size:15px}
+#msg-caree{margin-top:14px;color:var(--hint);text-align:center;font-size:15px;white-space:pre-line}
 #msg-ret{margin-top:14px;color:var(--hint);text-align:center;font-size:15px}
 #msg{margin-top:14px;color:#e5484d;min-height:22px;font-size:15px;text-align:center}
 </style></head><body>
@@ -1440,21 +1440,33 @@ function ligneCaree(c,mienne){
   s.appendChild(document.createTextNode(court(c.depart)+" → "+court(c.arrivee)));
   var sm=document.createElement("small");sm.textContent=c.depart+" → "+c.arrivee+(c.infos?" · "+c.infos:"");s.appendChild(sm);
   var bc=document.createElement("button");bc.type="button";bc.textContent="⧉";bc.addEventListener("click",function(){tap();copierTexte(c.copie,bc);});
+  d.appendChild(s);d.appendChild(bc);
+  if(mienne==="faite"){d.style.opacity=".55";var ok=document.createElement("button");ok.type="button";ok.textContent="✔️";ok.disabled=true;d.appendChild(ok);return d;}
   var ba=document.createElement("button");ba.type="button";ba.className=mienne?"f":"p";ba.textContent=mienne?"✅":"📲";
-  ba.addEventListener("click",function(){tap();ba.disabled=true;apiCaree(mienne?"/api/caree_fait":"/api/caree_prendre",c.id,chargerCaree);});
-  d.appendChild(s);d.appendChild(bc);d.appendChild(ba);return d;
+  ba.addEventListener("click",function(){
+    tap();
+    var faire=function(){ba.disabled=true;
+      apiCaree(mienne?"/api/caree_fait":"/api/caree_prendre",c.id,function(){
+        chargerCaree(mienne?"✅ Notée comme rentrée dans Caree.":"📲 Ajoutée à ta liste : rentre-la dans Caree puis touche ✅.");});};
+    var q=mienne?"Tu l'as bien rentrée dans Caree ?":"Tu la prends pour la rentrer dans Caree ?";
+    try{if(tg.showConfirm){tg.showConfirm(q,function(oui){if(oui)faire();});return;}}catch(e){}
+    if(confirm(q))faire();
+  });
+  d.appendChild(ba);return d;
 }
-function chargerCaree(){
+function chargerCaree(info){
   $("msg-caree").textContent="Chargement…";$("liste-caree").innerHTML="";
   fetch("/api/caree",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData})})
     .then(function(r){return r.json();}).then(function(j){
       if(!j.ok){$("msg-caree").textContent=j.erreur||"Erreur, réessaie.";return;}
-      $("msg-caree").textContent=(j.miennes.length||j.libres.length)?"⧉ copier · ✅ fait dans Caree · 📲 je la prends pour Caree":"Rien à rentrer dans Caree 👍";
+      $("msg-caree").textContent=(typeof info==="string"?info+"\\n\\n":"")+((j.miennes.length||j.libres.length)?"⧉ copier · ✅ fait dans Caree · 📲 je la prends pour Caree":"Rien à rentrer dans Caree 👍");
       var z=$("liste-caree");
       if(j.miennes.length){var h=document.createElement("div");h.className="ch";h.textContent="À RENTRER PAR MOI";z.appendChild(h);
         j.miennes.forEach(function(c){z.appendChild(ligneCaree(c,true));});}
       if(j.libres.length){var h2=document.createElement("div");h2.className="ch";h2.textContent="PERSONNE NE L'A PRISE";z.appendChild(h2);
         j.libres.forEach(function(c){z.appendChild(ligneCaree(c,false));});}
+      if((j.faites||[]).length){var h3=document.createElement("div");h3.className="ch";h3.textContent="DÉJÀ RENTRÉES (24 H)";z.appendChild(h3);
+        j.faites.forEach(function(c){z.appendChild(ligneCaree(c,"faite"));});}
     }).catch(function(){$("msg-caree").textContent="Pas de connexion, réessaie.";});
 }
 function court(a){return String(a||"").split(",")[0];}
@@ -1830,8 +1842,11 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                         def vue(c):
                             return {"id": c["id"], "heure": c["heure"], "depart": c["depart"], "arrivee": c["arrivee"],
                                     "infos": c.get("commentaire", ""), "copie": texte_copie(c)}
+                        faites = [c for c in state["courses"].values() if c.get("caree") and c["statut"] == "caree"
+                                  and c.get("caree_fait") and c.get("caree_par_id") == user["id"]
+                                  and str(c.get("chat")) == str(WEB_CHAT_ID) and time.time() - c.get("caree_ts", 0) < 86400]
                         rep_ = {"ok": True, "miennes": [vue(c) for c in a_rentrer if c.get("caree_par_id") == user["id"]],
-                                "libres": [vue(c) for c in libres]}
+                                "libres": [vue(c) for c in libres], "faites": [vue(c) for c in faites]}
                     else:
                         c = state["courses"].get(str(corps.get("id", "")))
                         if not c or str(c.get("chat")) != str(WEB_CHAT_ID) or not c.get("caree"):
