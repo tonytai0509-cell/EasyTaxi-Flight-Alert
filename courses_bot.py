@@ -1875,7 +1875,7 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                                   and c.get("caree_fait") and c.get("caree_par_id") == user["id"]
                                   and str(c.get("chat")) == str(WEB_CHAT_ID) and time.time() - c.get("caree_ts", 0) < 86400]
                         rep_ = {"ok": True, "miennes": [vue(c, True) for c in a_rentrer if c.get("caree_par_id") == user["id"]],
-                                "libres": [vue(c) for c in libres], "faites": [vue(c, True) for c in faites]}
+                                "libres": [vue(c, True) for c in libres], "faites": [vue(c, True) for c in faites]}
                     else:
                         c = state["courses"].get(str(corps.get("id", "")))
                         if not c or str(c.get("chat")) != str(WEB_CHAT_ID) or not c.get("caree"):
