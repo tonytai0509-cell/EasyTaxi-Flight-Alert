@@ -2084,19 +2084,17 @@ def maj_liste_caree(chat, reposter=False):
     remis en bas du groupe quand une course y entre, supprimé quand tout est fait."""
     if not chat:
         return
-    a_rentrer, libres = courses_caree(chat)
+    a_rentrer, _ = courses_caree(chat)   # les courses 🟠 pas encore prises ont déjà leur bulle : pas en double
     info = state.setdefault("caree_msg", {})
     ancien = info.get(str(chat))
     with dans(chat):
-        if not a_rentrer and not libres:
+        if not a_rentrer:
             if ancien:
                 supprimer(ancien)
                 info.pop(str(chat), None)
             return
         lignes = [[{"text": f"⏳ {heure_courte(c)} {adresse_courte(c['depart'])} → {adresse_courte(c['arrivee'])} · "
                             f"{prenom(c.get('caree_par'))}", "callback_data": f"cf:{c['id']}"}] for c in a_rentrer[:12]]
-        lignes += [[{"text": f"🟠 {heure_courte(c)} {adresse_courte(c['depart'])} → {adresse_courte(c['arrivee'])} · à prendre",
-                     "callback_data": f"t:{c['id']}"}] for c in libres[:6]]
         texte = "📲 <b>À rentrer dans Caree</b> · touche ta ligne quand c'est fait"
         clavier = {"inline_keyboard": lignes}
         if ancien and not reposter:
@@ -2182,8 +2180,6 @@ def recevoir_site(corps):
         return 400, {"ok": False}
     with LOCK, dans(WEB_CHAT_ID):
         publier_course(w)
-        if w["caree"] and not w["deja_tony"]:
-            maj_liste_caree(WEB_CHAT_ID)
         sauver_etat()
     return 200, {"ok": True}
 
