@@ -52,6 +52,12 @@ CHAT_ID = os.getenv("COURSES_CHAT_ID")
 # Deuxième groupe (Easy Web Group, courses du site) : mêmes fonctions, plus le transfert
 # manuel d'une course vers le groupe principal (EasyTaxi Group).
 WEB_CHAT_ID = os.getenv("COURSES_WEB_CHAT_ID", "-1003978779077").strip()
+# Réservations du site internet -> groupe Easy Web. Mot de passe partagé avec le site
+# (DISPATCH_CLE côté Cloudflare), saisi par Tony lui-même dans les variables.
+SITE_CLE = os.getenv("COURSES_SITE_CLE", "").strip()
+SITE_URL = os.getenv("COURSES_SITE_URL", "https://taxi-conventionne06.fr").strip().rstrip("/")
+TAGS_SITE = {"ads": "🌐 <b>Site · nouveau client</b>", "site": "🔎 <b>Site · recherche Google</b>",
+             "qr": "🔳 <b>QR code</b>", "client_tony": "⭐ <b>Ancien client · Tony</b>"}
 NOM_GROUPE = os.getenv("COURSES_NOM_GROUPE", "EasyTaxi Group")
 DATA_DIR = os.getenv("DATA_DIR", ".")
 STATE_FILE = os.getenv("COURSES_STATE_FILE", os.path.join(DATA_DIR, "courses_state.json"))
@@ -645,7 +651,9 @@ def bloc_tableau(n, c, complet=True):
 def pastille(c):
     s, copie = c["statut"], copie_de(c)
     if s == "open":
-        return "🔴" if c.get("urgent") else "🎲" if c.get("tirage") else "🟢"
+        return "🔴" if c.get("urgent") else "🎲" if c.get("tirage") else "🟠" if c.get("caree") else "🟢"
+    if s == "caree":
+        return "📲"
     if s == "prise" or (s == "transferee" and copie and copie["statut"] == "prise"):
         return "✅"
     if s == "transferee":
@@ -661,14 +669,20 @@ def ligne_bulle(c):
     extra = [echapper(c["commentaire"])] if c.get("commentaire") else []
     if c.get("retour_de"):
         extra.append("retour")
-    extra.append(echapper(c["donneur_nom"]))
+    if c.get("donneur_nom"):
+        extra.append(echapper(c["donneur_nom"]))
     s, copie = c["statut"], copie_de(c)
+    if s == "caree":
+        extra.append(f"📲 sur Caree par {echapper(c.get('caree_par') or '?')}")
     if s == "transferee" and not (copie and copie["statut"] == "prise"):
         extra.append(f"sur {echapper(NOM_GROUPE)}" if copie and copie["statut"] == "open" else f"fermée sur {echapper(NOM_GROUPE)}")
     elif s in ("trouvee", "annulee", "arretee", "expiree"):
         extra.append({"trouvee": "prise ailleurs", "annulee": "annulée", "arretee": "arrêtée",
                       "expiree": "personne ne l'a prise"}[s])
-    t += " <i>· " + " · ".join(extra) + "</i>"
+    if extra:
+        t += " <i>· " + " · ".join(extra) + "</i>"
+    if c.get("site"):
+        t = TAGS_SITE.get(c["site"].get("origine"), "🌐 <b>Site</b>") + "\n" + t
     if s == "open" and c.get("proches"):
         t += "\n🚕 Libres près du départ : " + " · ".join(
             (f"<b>{echapper(n)} {m} min</b>" if i == 0 else f"{echapper(n)} {m} min") for i, (n, m) in enumerate(c["proches"]))
@@ -708,6 +722,12 @@ def bouton_action(c, avec_lien=True, avec_style=True):
     if s == "open" and c.get("tirage"):
         n = len(c.get("inscrits", {}))
         return {"text": f"🎲 Je participe{f' ({n})' if n else ''}", "callback_data": cb}
+    if s == "open" and c.get("caree"):
+        return {"text": "📲 Caree", "callback_data": cb}
+    if s == "caree":
+        return {"text": f"📲 Caree · {prenom(c.get('caree_par'))}", "callback_data": cb}
+    if s == "prise" and c.get("site") and c["site"].get("origine") == "client_tony" and not c.get("pris_par_id"):
+        return {"text": "⭐ Tony", "callback_data": cb}
     if s == "open":
         b = {"text": f"{pastille(c)} Je la prends", "callback_data": cb}
         if avec_style and c.get("urgent"):
@@ -728,7 +748,7 @@ def clavier_lot(lot, courses, avec_lien=True, avec_style=True):
     lignes = []
     for c in courses:
         rang = [bouton_action(c, avec_lien, avec_style), {"text": "Copier", "copy_text": {"text": texte_copie(c)}}]
-        if c["statut"] != "open" and not c.get("retour_de"):
+        if c["statut"] not in ("open", "caree") and not c.get("retour_de"):
             # Retour à la demande (1 h ou 2 après) : un appui, la course inverse part en « maintenant ».
             rang.append({"text": "↩️ Retour", "callback_data": f"ret:{c['id']}"})
         lignes.append(rang)
@@ -768,7 +788,10 @@ def detail_course(c):
     l = [f"🕐 {c['heure']}", f"📍 {c['depart']}", f"🏁 {c['arrivee']}"]
     if c.get("commentaire"):
         l.append(f"💬 {c['commentaire']}")
-    l.append(f"👤 Donnée par {c['donneur_nom']}")
+    if c.get("donneur_nom"):
+        l.append(f"👤 Donnée par {c['donneur_nom']}")
+    elif c.get("site"):
+        l.append("🌐 Réservée sur le site")
     return "\n".join(l)
 
 
@@ -854,7 +877,8 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
             info = f"Envoyée sur {NOM_GROUPE}"
         else:
             info = {"trouvee": "Trouvée ailleurs", "annulee": "Annulée", "arretee": "Arrêtée",
-                    "expiree": "Personne ne l'a prise"}.get(c["statut"], "Clôturée")
+                    "expiree": "Personne ne l'a prise",
+                    "caree": f"📲 Sur Caree par {c.get('caree_par') or '?'}"}.get(c["statut"], "Clôturée")
         alerte(cb_id, fiche(info, c))
         return
     annuler = uid == c["donneur_id"] or (time.time() - _mode_annuler.get(uid, 0) < ANNULATION_SECONDES and est_admin(uid))
@@ -883,10 +907,18 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
             c["tirage_fin"] = None
         maj_carte(c)
         return
+    if c.get("caree"):
+        # Réservation du site pour un autre jour : celui qui touche la rentre dans Caree.
+        c["caree_par"] = nom
+        cloturer(c, "caree")
+        signaler_site(c, nom)
+        repondre_callback(cb_id, "📲 Notée pour toi : rentre-la dans Caree (« Copier » te donne le texte).", alerte=True)
+        return
     # Les infos sont dans la bulle : un seul appui suffit pour prendre la course.
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
     c["pris_par_username"] = user.get("username")
     cloturer(c, "prise")
+    signaler_site(c, nom)
     retirer_libre(uid)
     repondre_callback(cb_id, "Course prise ✅")
 
@@ -942,6 +974,9 @@ def _publier_course(w):
         "demain": bool(w.get("demain")),
         "urgent": bool(w.get("urgent")),
         "retour_de": w.get("retour_de"),
+        "site": w.get("site"),
+        "caree": bool(w.get("caree")),
+        "jour": w.get("jour"),
         "tirage": bool(w.get("tirage")),
         "inscrits": {},
         "poste_a": datetime.now(TZ).strftime("%H:%M"),
@@ -954,6 +989,9 @@ def _publier_course(w):
         "message_id": None,
         "rappel_id": None,
     }
+    if w.get("deja_tony"):
+        # Ancien client de Tony : la course arrive déjà à son nom.
+        c["statut"], c["pris_par_nom"], c["ferme_ts"] = "prise", "Tony", time.time()
     if True:
         # Les deux groupes : pas de carte, un message par envoi (lot), mis à jour sur place.
         c["lot"] = w.get("lot") or cid
@@ -1692,6 +1730,16 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                 logger.exception("Positions")
                 self._repondre(400, json.dumps({"ok": False}))
             return
+        if self.path == "/api/site":
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                corps = json.loads(self.rfile.read(n).decode("utf-8")) if 0 < n <= 10000 else {}
+                code, rep_ = recevoir_site(corps)
+            except Exception:
+                logger.exception("Réservation du site")
+                code, rep_ = 400, {"ok": False}
+            self._repondre(code, json.dumps(rep_))
+            return
         if self.path == "/api/libre":
             try:
                 n = int(self.headers.get("Content-Length", "0"))
@@ -1886,6 +1934,69 @@ def traiter_callback(cb):
         return
     with dans(msg["chat"]["id"]):
         traiter_callback_groupe(cb, cb_id, user, uid, nom, msg)
+
+
+def signaler_site(c, nom):
+    """Course Google Ads prise ou mise dans Caree depuis Telegram : l'espace partenaires du site la marque aussi."""
+    pid = (c.get("site") or {}).get("pid")
+    if not (pid and SITE_CLE):
+        return
+    def envoi():
+        try:
+            requests.post(f"{SITE_URL}/api/partenaires/telegram", json={"cle": SITE_CLE, "id": pid, "nom": nom}, timeout=8)
+        except Exception:
+            logger.exception("Signalement au site")
+    threading.Thread(target=envoi, daemon=True).start()
+
+
+JOURS_COURTS = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
+
+
+def recevoir_site(corps):
+    """Réservation du site (sans nom ni téléphone du patient) -> bulle dans Easy Web. Retourne (code, réponse)."""
+    if not SITE_CLE or not hmac.compare_digest(str(corps.get("cle", "")), SITE_CLE):
+        return 403, {"ok": False}
+    if not WEB_CHAT_ID:
+        return 503, {"ok": False}
+    date = str(corps.get("date", ""))
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        return 400, {"ok": False}
+    def h(x):
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(x or ""))
+        return f"{int(m.group(1))}h{m.group(2)}" if m else None
+    pc, rdv = h(corps.get("heurePc")), h(corps.get("heureRdv"))
+    jour = datetime.strptime(date, "%Y-%m-%d").date()
+    auj = datetime.now(TZ).date()
+    if jour == auj:
+        quand = "aujourd'hui"
+    elif (jour - auj).days == 1:
+        quand = "demain"
+    else:
+        quand = f"{JOURS_COURTS[jour.weekday()]} {jour:%d/%m}"
+    heure = f"{quand} {pc}" if pc else f"{quand} · PC à définir"
+    origine = str(corps.get("origine", "site"))
+    if origine not in TAGS_SITE:
+        origine = "site"
+    infos = ["🏥 médical" if corps.get("type") == "medical" else "🚕 privé"]
+    if rdv:
+        infos.append(f"RDV {rdv}")
+    if corps.get("options"):
+        infos.append(nettoyer_champ(str(corps["options"])))
+    try:
+        pid = int(corps.get("partenaireId")) if corps.get("partenaireId") else None
+    except (TypeError, ValueError):
+        pid = None
+    w = {"uid": 0, "nom": "", "heure": heure, "demain": jour != auj,
+         "depart": nettoyer_champ(str(corps.get("depart", ""))), "arrivee": nettoyer_champ(str(corps.get("destination", ""))),
+         "commentaire": " · ".join(infos), "chat": WEB_CHAT_ID,
+         "site": {"origine": origine, "ref": nettoyer_champ(str(corps.get("reference", "")))[:20], "pid": pid},
+         "caree": jour != auj, "jour": date, "deja_tony": origine == "client_tony"}
+    if not (w["depart"] and w["arrivee"]):
+        return 400, {"ok": False}
+    with LOCK, dans(WEB_CHAT_ID):
+        publier_course(w)
+        sauver_etat()
+    return 200, {"ok": True}
 
 
 LIBRE_POSITION_SECONDES = 30 * 60
@@ -2296,8 +2407,9 @@ def entretenir_course(cid, c, now):
             c["tirage_suppr"], c["tirage_msgs"] = None, []
             change = True
         # Message par envoi : pas de rappels ; on oublie les courses au bout de 7 jours.
-        if c["statut"] == "open" and not c.get("tirage_gagnant") and \
-                now - c["cree_ts"] > (36 * 3600 if c.get("demain") else EXPIRATION_MINUTES * 60):
+        trop_vieille = (c["jour"] < datetime.now(TZ).strftime("%Y-%m-%d")) if c.get("jour") else \
+            now - c["cree_ts"] > (36 * 3600 if c.get("demain") else EXPIRATION_MINUTES * 60)
+        if c["statut"] == "open" and not c.get("tirage_gagnant") and trop_vieille:
             cloturer(c, "expiree")
             return True
         if c["statut"] != "open" and now - c["cree_ts"] > CONSERVATION_JOURS * 86400:
