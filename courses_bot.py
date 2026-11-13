@@ -762,6 +762,7 @@ def bouton_action(c, avec_lien=True, avec_style=True):
     if pris:
         ecrire = bouton_ecrire(pris) if avec_lien else None
         nom = prenom(pris.get("pris_par_nom"))
+        nom = nom if len(nom) <= 8 else nom[:7] + "."   # 3 boutons sur la ligne : sinon coupé
         return {"text": f"💬 {nom}", "url": ecrire["url"]} if ecrire else {"text": f"✅ {nom}", "callback_data": cb}
     if s == "transferee":
         return {"text": "↪️ sur ET" if copie and copie["statut"] == "open" else "⌛ ET", "callback_data": cb}
@@ -1443,7 +1444,9 @@ function onglet(n){
 $("o-nouv").addEventListener("click",function(){tap();onglet("nouv");});
 $("o-ret").addEventListener("click",function(){tap();onglet("ret");});
 $("o-caree").addEventListener("click",function(){tap();onglet("caree");});
-try{if((tg.initDataUnsafe||{}).start_param==="webcaree"){onglet("caree");}}catch(e){}
+/* L'onglet Caree ne sert qu'à Easy Web (réservations du site) : caché dans EasyTaxi Group */
+try{var spc=String((tg.initDataUnsafe||{}).start_param||"");if(spc.indexOf("web")!==0){$("o-caree").style.display="none";}
+  if(spc==="webcaree"){onglet("caree");}}catch(e){}
 /* Onglet « Caree » : mes courses à rentrer (✅ au bout de la ligne) et celles que personne n'a prises */
 function apiCaree(chemin,id,ok){
   fetch(chemin,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({initData:tg.initData,id:id})})
