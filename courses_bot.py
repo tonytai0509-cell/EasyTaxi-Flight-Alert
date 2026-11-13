@@ -435,11 +435,26 @@ def normaliser_heure(txt):
 COPIER_LABEL = "\u2800"
 
 
-def texte_copie(c):
-    """Texte à copier/coller dans un autre groupe (sans le nom du donneur)."""
+def ligne_patient(c):
+    p = c.get("patient") or {}
+    if not (p.get("nom") or p.get("telephone")):
+        return ""
+    tels = " / ".join(t for t in (p.get("telephone"), p.get("telephone2")) if t)
+    return f"👤 {p.get('nom') or '?'}" + (f" · 📞 {tels}" if tels else "")
+
+
+def patient_visible(c):
+    """Nom et téléphone du patient dans le groupe : seulement les réservations du site pour le jour même."""
+    return bool(c.get("patient")) and not c.get("caree")
+
+
+def texte_copie(c, avec_patient=None):
+    """Texte à copier/coller (sans le nom du donneur)."""
     l = [f"🕐 {c['heure']}", f"📍 {c['depart']}", f"🏁 {c['arrivee']}"]
     if c.get("commentaire"):
         l.append(f"💬 {c['commentaire']}")
+    if (patient_visible(c) if avec_patient is None else avec_patient) and ligne_patient(c):
+        l.append(ligne_patient(c))
     return "\n".join(l)[:256]
 
 
@@ -686,6 +701,11 @@ def ligne_bulle(c):
         t += " <i>· " + " · ".join(extra) + "</i>"
     if c.get("site"):
         t = TAGS_SITE.get(c["site"].get("origine"), "🌐 <b>Site</b>") + "\n" + t
+    if patient_visible(c) and ligne_patient(c):
+        # Le numéro écrit en clair devient cliquable dans Telegram (Appeler / SMS).
+        p = c["patient"]
+        tels = " / ".join(echapper(x) for x in (p.get("telephone"), p.get("telephone2")) if x)
+        t += f"\n👤 <b>{echapper(p.get('nom') or '?')}</b>" + (f" · 📞 {tels}" if tels else "")
     if s == "open" and c.get("proches"):
         t += "\n🚕 Libres près du départ : " + " · ".join(
             (f"<b>{echapper(n)} {m} min</b>" if i == 0 else f"{echapper(n)} {m} min") for i, (n, m) in enumerate(c["proches"]))
@@ -979,6 +999,7 @@ def _publier_course(w):
         "site": w.get("site"),
         "caree": bool(w.get("caree")),
         "jour": w.get("jour"),
+        "patient": w.get("patient"),
         "tirage": bool(w.get("tirage")),
         "inscrits": {},
         "poste_a": datetime.now(TZ).strftime("%H:%M"),
@@ -1437,6 +1458,10 @@ function ligneCaree(c,mienne){
   var s=document.createElement("span");var b0=document.createElement("b");b0.textContent=c.heure+" ";s.appendChild(b0);
   s.appendChild(document.createTextNode(court(c.depart)+" → "+court(c.arrivee)));
   var sm=document.createElement("small");sm.textContent=c.depart+" → "+c.arrivee+(c.infos?" · "+c.infos:"");s.appendChild(sm);
+  if(c.patient){var pp=document.createElement("small");pp.style.color="var(--fg)";pp.appendChild(document.createTextNode("👤 "+(c.patient.nom||"?")));
+    [c.patient.tel,c.patient.tel2].forEach(function(t){if(!t)return;pp.appendChild(document.createTextNode(" · 📞 "));
+      var a=document.createElement("a");a.href="tel:"+t.replace(/ /g,"");a.textContent=t;a.style.color="var(--btn)";pp.appendChild(a);});
+    s.appendChild(pp);}
   var bc=document.createElement("button");bc.type="button";bc.textContent="⧉";bc.addEventListener("click",function(){tap();copierTexte(c.copie,bc);});
   d.appendChild(s);d.appendChild(bc);
   if(mienne==="faite"){d.style.opacity=".55";var ok=document.createElement("button");ok.type="button";ok.textContent="✔️";ok.disabled=true;d.appendChild(ok);return d;}
@@ -1837,14 +1862,16 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                 with LOCK:
                     if self.path == "/api/caree":
                         a_rentrer, libres = courses_caree(WEB_CHAT_ID)
-                        def vue(c):
+                        def vue(c, perso=False):
+                            p = (c.get("patient") or {}) if perso else {}
                             return {"id": c["id"], "heure": c["heure"], "depart": c["depart"], "arrivee": c["arrivee"],
-                                    "infos": c.get("commentaire", ""), "copie": texte_copie(c)}
+                                    "infos": c.get("commentaire", ""), "copie": texte_copie(c, avec_patient=perso),
+                                    "patient": {"nom": p.get("nom"), "tel": p.get("telephone"), "tel2": p.get("telephone2")} if p else None}
                         faites = [c for c in state["courses"].values() if c.get("caree") and c["statut"] == "caree"
                                   and c.get("caree_fait") and c.get("caree_par_id") == user["id"]
                                   and str(c.get("chat")) == str(WEB_CHAT_ID) and time.time() - c.get("caree_ts", 0) < 86400]
-                        rep_ = {"ok": True, "miennes": [vue(c) for c in a_rentrer if c.get("caree_par_id") == user["id"]],
-                                "libres": [vue(c) for c in libres], "faites": [vue(c) for c in faites]}
+                        rep_ = {"ok": True, "miennes": [vue(c, True) for c in a_rentrer if c.get("caree_par_id") == user["id"]],
+                                "libres": [vue(c) for c in libres], "faites": [vue(c, True) for c in faites]}
                     else:
                         c = state["courses"].get(str(corps.get("id", "")))
                         if not c or str(c.get("chat")) != str(WEB_CHAT_ID) or not c.get("caree"):
@@ -2122,8 +2149,9 @@ def rappels_caree(now):
         change = True
         d = api("sendMessage", chat_id=c["caree_par_id"], parse_mode="HTML",
                 text=(f"⏰ <b>Pense à Caree !</b>\n{echapper(c['heure'])} · {echapper(c['depart'])} → "
-                      f"{echapper(c['arrivee'])}" + (f" · {echapper(c['commentaire'])}" if c.get("commentaire") else "")),
-                reply_markup={"inline_keyboard": [[{"text": "Copier", "copy_text": {"text": texte_copie(c)}},
+                      f"{echapper(c['arrivee'])}" + (f" · {echapper(c['commentaire'])}" if c.get("commentaire") else "")
+                      + (f"\n{echapper(ligne_patient(c))}" if ligne_patient(c) else "")),
+                reply_markup={"inline_keyboard": [[{"text": "Copier", "copy_text": {"text": texte_copie(c, avec_patient=True)}},
                                                    {"text": "✅ C'est fait", "callback_data": f"cf:{c['id']}"}]]},
                 link_preview_options={"is_disabled": True})
         if not d.get("ok") and not c.get("caree_rappel_groupe"):
@@ -2169,7 +2197,14 @@ def recevoir_site(corps):
         pid = int(corps.get("partenaireId")) if corps.get("partenaireId") else None
     except (TypeError, ValueError):
         pid = None
+    pat = corps.get("patient") if isinstance(corps.get("patient"), dict) else {}
+    def tel(x):
+        t = re.sub(r"[^0-9+ ]", "", str(x or "")).strip()[:20]
+        return t or None
+    patient = {"nom": nettoyer_champ(str(pat.get("nom") or ""))[:60], "telephone": tel(pat.get("telephone")),
+               "telephone2": tel(pat.get("telephone2"))}
     w = {"uid": 0, "nom": "", "heure": heure, "demain": jour != auj,
+         "patient": patient if (patient["nom"] or patient["telephone"]) else None,
          "depart": nettoyer_champ(str(corps.get("depart", ""))), "arrivee": nettoyer_champ(str(corps.get("destination", ""))),
          "commentaire": " · ".join(infos), "chat": WEB_CHAT_ID,
          "site": {"origine": origine, "ref": nettoyer_champ(str(corps.get("reference", "")))[:20], "pid": pid},
@@ -2591,6 +2626,9 @@ def entretenir_course(cid, c, now):
             c["tirage_suppr"], c["tirage_msgs"] = None, []
             change = True
         # Message par envoi : pas de rappels ; on oublie les courses au bout de 7 jours.
+        if c.get("patient") and c.get("jour") and c["jour"] < datetime.now(TZ).strftime("%Y-%m-%d"):
+            c["patient"] = None   # données du patient effacées après le jour de la course
+            change = True
         trop_vieille = (c["jour"] < datetime.now(TZ).strftime("%Y-%m-%d")) if c.get("jour") else \
             now - c["cree_ts"] > (36 * 3600 if c.get("demain") else EXPIRATION_MINUTES * 60)
         if c["statut"] == "open" and not c.get("tirage_gagnant") and trop_vieille:
