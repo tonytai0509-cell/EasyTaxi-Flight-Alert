@@ -788,7 +788,7 @@ def clavier_lot(lot, courses, avec_lien=True, avec_style=True):
             rang.append({"text": "❌", "callback_data": f"ref:{c['id']}"})
         if c["statut"] not in ("open", "caree") and not c.get("retour_de"):
             # Retour à la demande (1 h ou 2 après) : un appui, la course inverse part en « maintenant ».
-            rang.append({"text": "↩️", "callback_data": f"ret:{c['id']}"})
+            rang.append({"text": "↩️ Retour", "callback_data": f"ret:{c['id']}"})
         lignes.append(rang)
         if est_web() and c["statut"] == "open":
             lignes.append([{"text": "↪️ Envoyer sur EasyTaxi", "callback_data": f"tall:{lot}"}])
