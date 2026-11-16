@@ -747,7 +747,7 @@ def bouton_tableau(n, c):
 
 
 def bouton_action(c, avec_lien=True, avec_style=True):
-    """Bouton sous la bulle : « Je la prends », puis « 💬 Prénom » (conversation privée) une fois prise."""
+    """Bouton sous la bulle : « Prendre », puis « 💬 Prénom » (conversation privée) une fois prise."""
     s, copie = c["statut"], copie_de(c)
     cb = f"t:{c['id']}"
     if s == "open" and c.get("tirage"):
@@ -761,7 +761,7 @@ def bouton_action(c, avec_lien=True, avec_style=True):
     if s == "prise" and c.get("site") and c["site"].get("origine") == "client_tony" and not c.get("pris_par_id"):
         return {"text": "⭐ Tony", "callback_data": cb}
     if s == "open":
-        b = {"text": f"{pastille(c)} Je la prends", "callback_data": cb}
+        b = {"text": f"{pastille(c)} Prendre", "callback_data": cb}
         if avec_style and c.get("urgent"):
             b["style"] = "danger"   # bouton rouge (versions récentes de Telegram)
         return b
