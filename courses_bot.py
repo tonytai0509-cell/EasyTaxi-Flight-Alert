@@ -451,9 +451,11 @@ def patient_visible(c):
 
 def texte_copie(c, avec_patient=None):
     """Texte à copier/coller (sans le nom du donneur)."""
-    l = [f"🕐 {c['heure']}", f"📍 {c['depart']}", f"🏁 {c['arrivee']}"]
+    # Une seule ligne simple : « 14h30 Départ > Arrivée (commentaire) ».
+    ligne = f"{c['heure']} {c['depart']} > {c['arrivee']}"
     if c.get("commentaire"):
-        l.append(f"💬 {c['commentaire']}")
+        ligne += f" ({c['commentaire']})"
+    l = [ligne]
     if (patient_visible(c) if avec_patient is None else avec_patient) and ligne_patient(c):
         l.append(ligne_patient(c))
     return "\n".join(l)[:256]
@@ -761,7 +763,7 @@ def bouton_action(c, avec_lien=True, avec_style=True):
     if s == "prise" and c.get("site") and c["site"].get("origine") == "client_tony" and not c.get("pris_par_id"):
         return {"text": "⭐ Tony", "callback_data": cb}
     if s == "open":
-        b = {"text": f"{pastille(c)} Prendre", "callback_data": cb}
+        b = {"text": "Prendre", "callback_data": cb}
         if avec_style and c.get("urgent"):
             b["style"] = "danger"   # bouton rouge (versions récentes de Telegram)
         return b
@@ -786,7 +788,7 @@ def clavier_lot(lot, courses, avec_lien=True, avec_style=True):
             rang.append({"text": "❌", "callback_data": f"ref:{c['id']}"})
         if c["statut"] not in ("open", "caree") and not c.get("retour_de"):
             # Retour à la demande (1 h ou 2 après) : un appui, la course inverse part en « maintenant ».
-            rang.append({"text": "↩️ Retour", "callback_data": f"ret:{c['id']}"})
+            rang.append({"text": "↩️", "callback_data": f"ret:{c['id']}"})
         lignes.append(rang)
         if est_web() and c["statut"] == "open":
             lignes.append([{"text": "↪️ Envoyer sur EasyTaxi", "callback_data": f"tall:{lot}"}])
