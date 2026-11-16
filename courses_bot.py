@@ -712,6 +712,8 @@ def ligne_bulle(c):
         p = c["patient"]
         tels = " / ".join(echapper(x) for x in (p.get("telephone"), p.get("telephone2")) if x)
         t += f"\n👤 <b>{echapper(p.get('nom') or '?')}</b>" + (f" · 📞 {tels}" if tels else "")
+    if s == "open" and c.get("refus"):
+        t += "\n❌ " + ", ".join(echapper(prenom(n)) for n in c["refus"].values())
     if s == "open" and c.get("proches"):
         t += "\n🚕 Libres près du départ : " + " · ".join(
             (f"<b>{echapper(n)} {m} min</b>" if i == 0 else f"{echapper(n)} {m} min") for i, (n, m) in enumerate(c["proches"]))
@@ -779,6 +781,9 @@ def clavier_lot(lot, courses, avec_lien=True, avec_style=True):
     lignes = []
     for c in courses:
         rang = [bouton_action(c, avec_lien, avec_style), {"text": "Copier", "copy_text": {"text": texte_copie(c)}}]
+        if c["statut"] == "open" and not c.get("caree"):
+            # Pas disponible : le prénom s'ajoute dans la bulle (au lieu d'écrire « N » dans le groupe).
+            rang.append({"text": "❌", "callback_data": f"ref:{c['id']}"})
         if c["statut"] not in ("open", "caree") and not c.get("retour_de"):
             # Retour à la demande (1 h ou 2 après) : un appui, la course inverse part en « maintenant ».
             rang.append({"text": "↩️ Retour", "callback_data": f"ret:{c['id']}"})
@@ -944,6 +949,7 @@ def callback_tableau(cb_id, user, uid, nom, action, ref):
         repondre_callback(cb_id)
         return
     # Les infos sont dans la bulle : un seul appui suffit pour prendre la course.
+    c.setdefault("refus", {}).pop(str(uid), None)
     c["pris_par_id"], c["pris_par_nom"] = uid, nom
     c["pris_par_username"] = user.get("username")
     cloturer(c, "prise")
@@ -2540,11 +2546,13 @@ def traiter_callback_groupe(cb, cb_id, user, uid, nom, msg):
     elif action == "ref":
         if uid == c["donneur_id"]:
             repondre_callback(cb_id, "Tu es le donneur : utilise Annuler.")
-        elif str(uid) in c["refus"]:
-            repondre_callback(cb_id, "Tu as déjà refusé.")
+        elif str(uid) in c.setdefault("refus", {}):
+            c["refus"].pop(str(uid), None)
+            repondre_callback(cb_id, "Retiré : tu redeviens disponible pour cette course.")
+            maj_carte(c)
         else:
             c["refus"][str(uid)] = nom
-            repondre_callback(cb_id, "Refus enregistré.")
+            repondre_callback(cb_id, "❌ Noté : pas disponible. Retouche ❌ pour annuler.")
             maj_carte(c)
     elif action in ("found", "cancel", "stop"):
         # Le donneur, ou un administrateur du groupe (course oubliée, donnée ailleurs…).
