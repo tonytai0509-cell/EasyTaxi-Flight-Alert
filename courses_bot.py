@@ -224,6 +224,17 @@ def declarer_libre(user):
         state["libres"][uid] = {"id": mid, "ts": time.time(), "chat": groupe(), "nom": nom_affiche(user)}
 
 
+def confirmer_libre(user):
+    """Position reçue : le message « est libre » prend un ✓ et perd son bouton."""
+    l = state["libres"].get(cle_u(user["id"]))
+    if l and not l.get("confirme"):
+        r = api("editMessageText", chat_id=l.get("chat") or groupe(), message_id=l["id"],
+                text=f"🟢 <b>{echapper(l.get('nom') or nom_affiche(user))}</b> est libre ✓",
+                parse_mode="HTML", reply_markup={"inline_keyboard": []})
+        if r and r.get("ok"):
+            l["confirme"] = True
+
+
 def retirer_libre(uid):
     ancien = state["libres"].pop(cle_u(uid), None)
     if ancien:
@@ -1857,6 +1868,7 @@ class FormulaireHandler(BaseHTTPRequestHandler):
                     with dans(chat):
                         if cle_u(user["id"]) not in state["libres"]:
                             declarer_libre(user)
+                        confirmer_libre(user)
                     # Courses libres du moment : on recalcule qui est le plus près.
                     for c in list(state["courses"].values()):
                         if str(c.get("chat")) == str(chat) and c["statut"] == "open" and not c.get("demain") \
