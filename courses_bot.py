@@ -62,6 +62,9 @@ NOM_GROUPE = os.getenv("COURSES_NOM_GROUPE", "EasyTaxi Group")
 DATA_DIR = os.getenv("DATA_DIR", ".")
 STATE_FILE = os.getenv("COURSES_STATE_FILE", os.path.join(DATA_DIR, "courses_state.json"))
 RAPPEL_SECONDES = int(os.getenv("COURSES_RAPPEL_SECONDES", "300"))
+# Course non prise : la bulle est reposée en bas du groupe toutes les 3 min, 2 fois (la 2e en rouge).
+RELANCE_SECONDES = int(os.getenv("COURSES_RELANCE_SECONDES", "180"))
+RELANCES_MAX = 2
 EXPIRATION_MINUTES = int(os.getenv("COURSES_EXPIRATION_MINUTES", "120"))
 WIZARD_TIMEOUT_SECONDES = int(os.getenv("COURSES_WIZARD_TIMEOUT", "180"))
 CONSERVATION_JOURS = 7
@@ -680,10 +683,22 @@ def bloc_tableau(n, c, complet=True):
     return "\n".join(l)
 
 
+def niveau_relance(c):
+    """0 : pas relancée ; 1 : 1re relance ; 2 : 2e relance (urgente, en rouge)."""
+    if c["statut"] != "open" or not c.get("lot"):
+        return 0
+    return state.get("lots", {}).get(c["lot"], {}).get("relance", 0)
+
+
+def relancable(c):
+    return (c["statut"] == "open" and not c.get("caree") and not c.get("demain")
+            and not c.get("tirage"))
+
+
 def pastille(c):
     s, copie = c["statut"], copie_de(c)
     if s == "open":
-        return "🔴" if c.get("urgent") else "🎲" if c.get("tirage") else "🟠" if c.get("caree") else "🟢"
+        return "🔴" if (c.get("urgent") or niveau_relance(c) >= 2) else "🎲" if c.get("tirage") else "🟠" if c.get("caree") else "🟢"
     if s == "caree":
         return "📲"
     if s == "prise" or (s == "transferee" and copie and copie["statut"] == "prise"):
@@ -725,6 +740,8 @@ def ligne_bulle(c):
         p = c["patient"]
         tels = " / ".join(echapper(x) for x in (p.get("telephone"), p.get("telephone2")) if x)
         t += f"\n👤 <b>{echapper(p.get('nom') or '?')}</b>" + (f" · 📞 {tels}" if tels else "")
+    if s == "open" and niveau_relance(c) == 1 and relancable(c):
+        t += f"\n🔁 <b>Toujours libre</b> · relance 1/{RELANCES_MAX}"
     if s == "open" and c.get("refus"):
         t += "\n❌ " + ", ".join(echapper(prenom(n)) for n in c["refus"].values())
     if s == "open" and c.get("proches"):
@@ -740,8 +757,15 @@ def ligne_bulle(c):
     return t
 
 
+BANDE_ROUGE = "🟥" * 14
+
+
 def texte_lot(courses):
-    return "\n".join(ligne_bulle(c) for c in courses)[:4096]
+    t = "\n".join(ligne_bulle(c) for c in courses)
+    if any(relancable(c) and niveau_relance(c) >= RELANCES_MAX for c in courses):
+        # 2e relance : « cadre » rouge (Telegram ne colore pas le contour des bulles).
+        t = f"{BANDE_ROUGE}\n🚨 <b>URGENT · personne ne l'a prise</b>\n{t}\n{BANDE_ROUGE}"
+    return t[:4096]
 
 
 def bouton_tableau(n, c):
@@ -775,7 +799,7 @@ def bouton_action(c, avec_lien=True, avec_style=True):
         return {"text": "⭐ Tony", "callback_data": cb}
     if s == "open":
         b = {"text": "Prendre", "callback_data": cb}
-        if avec_style and c.get("urgent"):
+        if avec_style and (c.get("urgent") or niveau_relance(c) >= 2):
             b["style"] = "danger"   # bouton rouge (versions récentes de Telegram)
         return b
     pris = c if s == "prise" else copie if (s == "transferee" and copie and copie["statut"] == "prise") else None
@@ -2636,7 +2660,30 @@ def maintenance():
     for cid, c in list(state["courses"].items()):
         with dans(c.get("chat")):
             change = entretenir_course(cid, c, now) or change
+    change = relancer_lots(now) or change
     change = rappels_caree(now) or change
+    return change
+
+
+def relancer_lots(now):
+    """Envoi dont une course reste libre : la bulle est effacée puis reposée en bas du groupe."""
+    change = False
+    for lot, info in list(state.get("lots", {}).items()):
+        ouvertes = [c for c in courses_lot(lot) if relancable(c)]
+        n = info.get("relance", 0)
+        if not ouvertes or n >= RELANCES_MAX:
+            continue
+        dernier = max(c["cree_ts"] for c in ouvertes)
+        if now - dernier > (RELANCES_MAX + 2) * RELANCE_SECONDES:
+            continue   # envoi ancien (ex. : avant une mise à jour du bot) : pas de relance tardive
+        depuis = info.get("relance_ts") or dernier
+        if now - depuis < RELANCE_SECONDES:
+            continue
+        info["relance"], info["relance_ts"] = n + 1, now
+        with dans(info.get("chat")):
+            supprimer(info.get("mid"), info.get("chat"))
+            maj_lot(lot, nouveau=True)
+        change = True
     return change
 
 
