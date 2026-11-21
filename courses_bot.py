@@ -2071,6 +2071,10 @@ def traiter_message_groupe(m):
     texte = (m.get("text") or "").strip()
     if user.get("is_bot") or not user.get("id") or not texte:
         return
+    cafe = RE_CAFE.match(texte)
+    if cafe and str(user["id"]) not in state["wizards"]:
+        proposer_cafe(user, m["message_id"], cafe.group(1))
+        return
     if prix.est_demande(texte):
         repondre_prix(groupe(), m["message_id"], texte)
         return
@@ -2527,6 +2531,10 @@ def traiter_callback_groupe(cb, cb_id, user, uid, nom, msg):
         callback_tableau(cb_id, user, uid, nom, action, ref)
         return
 
+    if action in ("cafo", "caft"):
+        repondre_cafe(cb_id, uid, nom, action, ref)
+        return
+
     if action == "posinfo":
         repondre_callback(cb_id, "Ouvre le bot en privé, puis 📎 → Position → Partager en direct (8 h). "
                                  "Tu peux aussi le faire dans le groupe.", alerte=True)
@@ -2661,8 +2669,77 @@ def maintenance():
         with dans(c.get("chat")):
             change = entretenir_course(cid, c, now) or change
     change = relancer_lots(now) or change
+    for k, cf in list(state.setdefault("cafes", {}).items()):
+        if now > cf["fin"]:
+            supprimer(cf.get("mid"), cf.get("chat"))
+            del state["cafes"][k]
+            change = True
     change = rappels_caree(now) or change
     return change
+
+
+# --------------------------------------------------------------------------- café
+
+# « café cal b », « café pasteur 1h », « café 12 avenue Jean Médecin 45 min »
+RE_CAFE = re.compile(r"^(?:caf[eé]|☕)\s+(.+)$", re.IGNORECASE)
+RE_DUREE = re.compile(r"\s+(\d{1,2})\s*(h|heures?|min|mn|minutes?)$", re.IGNORECASE)
+CAFE_MINUTES = 30
+
+
+def proposer_cafe(user, mid_origine, reste):
+    """Le message « café <lieu> » est remplacé par une carte avec « J'arrive » / « Plus tard »."""
+    reste = reste.strip()
+    minutes = CAFE_MINUTES
+    d = RE_DUREE.search(reste)
+    if d:
+        n = int(d.group(1))
+        minutes = max(5, min(180, n * 60 if d.group(2).lower().startswith("h") else n))
+        reste = reste[:d.start()].strip()
+    if not re.search(r"[0-9a-zà-ÿ]{2}", reste, re.IGNORECASE) or reste.lower() in ("dans", "vers", "a", "à", "?"):
+        return
+    r = prix.raccourci(reste)
+    nom_lieu, adresse = (r[0], r[1]) if r else (reste[:80], reste[:120])
+    supprimer(mid_origine)
+    k = str(state.get("next_cafe", 1))
+    state["next_cafe"] = int(k) + 1
+    cf = {"chat": groupe(), "mid": None, "par": nom_affiche(user), "lieu": nom_lieu, "adresse": adresse,
+          "fin": time.time() + minutes * 60, "oui": {}, "tard": {}}
+    state.setdefault("cafes", {})[k] = cf
+    cf["mid"] = envoyer(texte_cafe(cf), reply_markup=clavier_cafe(k))
+
+
+def texte_cafe(cf):
+    url = "https://www.google.com/maps/search/?api=1&amp;query=" + urllib.parse.quote(cf["adresse"], safe="")
+    fin = datetime.fromtimestamp(cf["fin"], TZ).strftime("%Hh%M")
+    t = (f"☕ <b>{echapper(cf['par'])} propose un café</b>\n"
+         f"📍 <a href=\"{url}\">{echapper(cf['lieu'])}</a>\n⏳ jusqu'à {fin}")
+    if cf["oui"]:
+        t += "\n☕ J'arrive : <b>" + ", ".join(echapper(prenom(n)) for n in cf["oui"].values()) + "</b>"
+    if cf["tard"]:
+        t += "\n🚕 Plus tard : " + ", ".join(echapper(prenom(n)) for n in cf["tard"].values())
+    return t
+
+
+def clavier_cafe(k):
+    return {"inline_keyboard": [[{"text": "☕ J'arrive", "callback_data": f"cafo:{k}"},
+                                 {"text": "🚕 Plus tard", "callback_data": f"caft:{k}"}]]}
+
+
+def repondre_cafe(cb_id, uid, nom, action, k):
+    cf = state.setdefault("cafes", {}).get(k)
+    if not cf or time.time() > cf["fin"]:
+        repondre_callback(cb_id, "Ce café est terminé ☕")
+        return
+    cle, autre = ("oui", "tard") if action == "cafo" else ("tard", "oui")
+    if str(uid) in cf[cle]:
+        cf[cle].pop(str(uid))
+        repondre_callback(cb_id, "Retiré.")
+    else:
+        cf[cle][str(uid)] = nom
+        cf[autre].pop(str(uid), None)
+        repondre_callback(cb_id, "☕ À tout de suite !" if cle == "oui" else "Noté, une prochaine fois 🚕")
+    api("editMessageText", chat_id=cf["chat"], message_id=cf["mid"], text=texte_cafe(cf), parse_mode="HTML",
+        reply_markup=clavier_cafe(k), link_preview_options={"is_disabled": True})
 
 
 def relancer_lots(now):
